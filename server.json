@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.OjasKord/local-model-suitability-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered evaluation of local model suitability for agents.",
   "title": "Local Model Suitability MCP",
   "websiteUrl": "https://kordagencies.com",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "local-model-suitability-mcp",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "transport": {
         "type": "stdio"
       },
