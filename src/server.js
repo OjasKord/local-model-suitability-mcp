@@ -406,6 +406,20 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
+  if (req.url === '/.well-known/mcp/server-card.json') {
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      name: 'local-model-suitability-mcp',
+      version: VERSION,
+      description: 'AI-powered evaluation of whether a local model is suitable for a specific task. Helps agents decide between local inference and cloud APIs based on cost, privacy, latency, and quality.',
+      tools: [TOOL_DEFINITION],
+      transport: 'stdio',
+      homepage: 'https://kordagencies.com',
+      author: 'ojas1'
+    }));
+    return;
+  }
+
   if (req.url === '/stats') {
     const statsKey = req.headers['x-stats-key'];
     if (statsKey !== process.env.STATS_KEY) {
