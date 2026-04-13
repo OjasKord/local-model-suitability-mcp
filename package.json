@@ -1,0 +1,38 @@
+{
+  "name": "local-model-suitability-mcp",
+  "version": "1.0.0",
+  "description": "AI-powered MCP tool that evaluates whether a local model is suitable for a specific task — helps agents decide between local inference and cloud APIs based on cost, privacy, latency, and quality requirements.",
+  "main": "src/server.js",
+  "type": "module",
+  "bin": {
+    "local-model-suitability-mcp": "src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "keywords": [
+    "mcp",
+    "agent",
+    "local-llm",
+    "ollama",
+    "model-routing",
+    "ai-inference",
+    "llm-evaluation",
+    "on-device-ai",
+    "privacy",
+    "cost-optimisation"
+  ],
+  "author": "ojas1",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OjasKord/local-model-suitability-mcp"
+  },
+  "homepage": "https://kordagencies.com"
+}

@@ -1,0 +1,27 @@
+{
+  "name": "local-model-suitability-mcp",
+  "display_name": "Local Model Suitability MCP",
+  "description": "AI-powered tool that evaluates whether a local model (Ollama, LM Studio, etc.) is suitable for a specific task — helping agents make intelligent decisions about cost, privacy, latency, and quality without guessing.",
+  "version": "1.0.0",
+  "author": {
+    "name": "ojas1",
+    "url": "https://kordagencies.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OjasKord/local-model-suitability-mcp"
+  },
+  "homepage": "https://kordagencies.com",
+  "license": "MIT",
+  "keywords": ["mcp", "agent", "local-llm", "ollama", "model-routing", "privacy", "cost-optimisation"],
+  "categories": ["ai", "infrastructure", "developer-tools"],
+  "tools": [
+    {
+      "name": "evaluate_local_model_suitability",
+      "description": "AI-powered evaluation of whether a local model is suitable for a specific task. Returns a structured verdict with cost, privacy, latency, and quality reasoning."
+    }
+  ],
+  "installation": {
+    "npm": "local-model-suitability-mcp"
+  }
+}

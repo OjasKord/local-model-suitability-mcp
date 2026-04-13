@@ -1,0 +1,24 @@
+name: local-model-suitability-mcp
+description: AI-powered tool that evaluates whether a local model (Ollama, LM Studio, etc.) is suitable for a specific task. Helps agents make intelligent decisions about cost, privacy, latency, and quality — avoiding expensive mistakes in both directions.
+version: 1.0.0
+author: ojas1
+homepage: https://kordagencies.com
+license: MIT
+
+tools:
+  - name: evaluate_local_model_suitability
+    description: >
+      Evaluates whether a specific local model is suitable for a specific task.
+      Returns a structured verdict (LOCAL / CLOUD / EITHER / NEITHER) with
+      reasoning about cost, privacy, quality risk, and failure modes.
+
+config:
+  schema:
+    type: object
+    properties:
+      apiKey:
+        type: string
+        description: "Pro API key from kordagencies.com. Leave blank for free tier (20 evaluations/month)."
+        x-from:
+          header: x-api-key
+    required: []
