@@ -1,6 +1,6 @@
 {
   "name": "local-model-suitability-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered MCP tool that evaluates whether a local model is suitable for a specific task — helps agents decide between local inference and cloud APIs based on cost, privacy, latency, and quality requirements.",
   "main": "src/server.js",
   "type": "module",
