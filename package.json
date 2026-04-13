@@ -34,5 +34,6 @@
     "type": "git",
     "url": "https://github.com/OjasKord/local-model-suitability-mcp"
   },
-  "homepage": "https://kordagencies.com"
+  "homepage": "https://kordagencies.com",
+  "mcpName": "io.github.OjasKord/local-model-suitability-mcp"
 }

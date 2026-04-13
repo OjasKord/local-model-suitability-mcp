@@ -1,27 +1,31 @@
 {
-  "name": "local-model-suitability-mcp",
-  "display_name": "Local Model Suitability MCP",
-  "description": "AI-powered tool that evaluates whether a local model (Ollama, LM Studio, etc.) is suitable for a specific task — helping agents make intelligent decisions about cost, privacy, latency, and quality without guessing.",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.OjasKord/local-model-suitability-mcp",
   "version": "1.0.0",
-  "author": {
-    "name": "ojas1",
-    "url": "https://kordagencies.com"
-  },
+  "description": "AI-powered evaluation of local model suitability for agents.",
+  "title": "Local Model Suitability MCP",
+  "websiteUrl": "https://kordagencies.com",
   "repository": {
-    "type": "git",
-    "url": "https://github.com/OjasKord/local-model-suitability-mcp"
+    "url": "https://github.com/OjasKord/local-model-suitability-mcp",
+    "source": "github"
   },
-  "homepage": "https://kordagencies.com",
-  "license": "MIT",
-  "keywords": ["mcp", "agent", "local-llm", "ollama", "model-routing", "privacy", "cost-optimisation"],
-  "categories": ["ai", "infrastructure", "developer-tools"],
-  "tools": [
+  "packages": [
     {
-      "name": "evaluate_local_model_suitability",
-      "description": "AI-powered evaluation of whether a local model is suitable for a specific task. Returns a structured verdict with cost, privacy, latency, and quality reasoning."
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "local-model-suitability-mcp",
+      "version": "1.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "description": "Anthropic API key required to power AI-based evaluations",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
     }
-  ],
-  "installation": {
-    "npm": "local-model-suitability-mcp"
-  }
+  ]
 }
