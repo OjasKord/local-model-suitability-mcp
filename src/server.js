@@ -4,12 +4,64 @@ import Anthropic from '@anthropic-ai/sdk';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { createServer } from 'http';
 import https from 'https';
+import { createRequire } from 'module';
+const require2 = createRequire(import.meta.url);
+const crypto = require2('crypto');
+const httpsLib = https;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = '1.0.3';
+const VERSION = '1.0.4';
 const FREE_TIER_LIMIT = 20;
 const FREE_TIER_WARNING = 16; // warn at 80% usage
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const PLAN_LIMITS = { pro: 2000, enterprise: Infinity };
+const apiKeys = new Map();
+
+function generateApiKey() { return 'lms_' + crypto.randomBytes(24).toString('hex'); }
+function getPlanFromProduct(name) {
+  if (!name) return 'pro';
+  return name.toLowerCase().includes('enterprise') ? 'enterprise' : 'pro';
+}
+
+async function sendEmail(to, subject, html) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ from: 'Local Model Suitability MCP <ojas@kordagencies.com>', to: [to], subject, html });
+    const req2 = httpsLib.request({
+      hostname: 'api.resend.com', path: '/emails', method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, res2 => { let d = ''; res2.on('data', c => d += c); res2.on('end', () => resolve({ status: res2.statusCode, body: d })); });
+    req2.on('error', e => resolve({ error: e.message }));
+    req2.write(body); req2.end();
+  });
+}
+
+async function sendApiKeyEmail(email, apiKey, plan) {
+  const planLabel = plan === 'enterprise' ? 'Enterprise' : 'Pro';
+  const limit = plan === 'enterprise' ? 'Unlimited' : '2,000';
+  const price = plan === 'enterprise' ? '$299' : '$99';
+  const html = '<!DOCTYPE html><html><body style="font-family:monospace;background:#080A0F;color:#E8EDF5;padding:40px;max-width:600px;margin:0 auto"><div style="border:1px solid rgba(125,211,252,0.3);border-radius:8px;padding:32px"><div style="color:#7DD3FC;font-size:13px;letter-spacing:0.2em;text-transform:uppercase;margin-bottom:24px">Local Model Suitability MCP - ' + planLabel + ' Plan</div><h1 style="font-size:24px;font-weight:700;margin-bottom:8px;color:#FFFFFF">Your API key is ready.</h1><div style="background:#141B24;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:20px;margin-bottom:24px"><div style="color:#5A6478;font-size:11px;text-transform:uppercase;margin-bottom:8px">Your API Key</div><div style="color:#7DD3FC;font-size:14px;word-break:break-all">' + apiKey + '</div></div><div style="background:#141B24;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:20px;margin-bottom:24px"><div style="color:#5A6478;font-size:11px;text-transform:uppercase;margin-bottom:8px">MCP Config</div><div style="color:#86EFAC;font-size:12px">{"local-model-suitability":{"url":"https://local-model-suitability-mcp-production.up.railway.app","headers":{"x-api-key":"' + apiKey + '"}}}</div></div><div style="background:#141B24;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:20px;margin-bottom:24px"><div style="color:#E8EDF5;font-size:13px">Plan: ' + planLabel + ' | Evaluations: ' + limit + '/month | ' + price + '/month</div></div><div style="background:#0D1219;border-radius:6px;padding:16px;margin-bottom:24px;font-size:11px;color:#5A6478;line-height:1.7">Results are AI-powered assessments for informational purposes only. We do not log your query content. Verify model output quality independently. Liability capped at 3 months fees. Full terms: kordagencies.com/terms.html</div><p style="color:#5A6478;font-size:12px">Questions? ojas@kordagencies.com</p></div></body></html>';
+  return sendEmail(email, 'Your Local Model Suitability MCP ' + planLabel + ' API Key', html);
+}
+
+async function handleStripeWebhook(body) {
+  try {
+    const event = JSON.parse(body);
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const email = session.customer_email || session.customer_details?.email;
+      const plan = getPlanFromProduct(session.metadata?.product_name || '');
+      if (email) {
+        const apiKey = generateApiKey();
+        apiKeys.set(apiKey, { email, plan, createdAt: nowISO(), calls: 0, limit: PLAN_LIMITS[plan] });
+        await sendApiKeyEmail(email, apiKey, plan);
+        process.stderr.write('[lms] API key created for ' + email + ' (' + plan + ')\n');
+        return { success: true, email, plan };
+      }
+    }
+    return { received: true, type: event.type };
+  } catch(e) { return { error: e.message }; }
+}
 const STATS_FILE = '/tmp/lms_stats.json';
 
 const LEGAL_DISCLAIMER =
@@ -57,7 +109,13 @@ const stats = loadStats();
 // ─── Free tier enforcement ────────────────────────────────────────────────────
 
 function checkFreeTier(apiKey, clientIp) {
-  if (apiKey) return { allowed: true, paid: true };
+  if (apiKey) {
+    const record = apiKeys.get(apiKey);
+    if (!record) return { allowed: false, paid: false, invalidKey: true };
+    if (record.limit !== Infinity && record.calls >= record.limit) return { allowed: false, paid: true, limitReached: true };
+    record.calls++;
+    return { allowed: true, paid: true };
+  }
   const key = clientIp || 'unknown';
   const now = new Date();
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -305,7 +363,7 @@ async function handleRequest(request) {
           {
             type: 'text',
             text: JSON.stringify({
-              error: `Free tier limit of ${FREE_TIER_LIMIT} evaluations/month reached. You have seen it work — upgrade to Pro ($99/month) at kordagencies.com/buy to continue.`,
+              error: `Free tier limit of ${FREE_TIER_LIMIT} evaluations/month reached. You have seen it work — upgrade now:\nPro ($99/month): https://buy.stripe.com/00waEW6o5f1H5JO0h2ebu09\nEnterprise ($299/month): https://buy.stripe.com/6oU5kCcMt3iZc8c4xiebu0a`,
               upgrade_url: 'https://kordagencies.com',
               _disclaimer: LEGAL_DISCLAIMER,
             }),
@@ -454,7 +512,7 @@ const httpServer = createServer(async (req, res) => {
 
   if (req.url === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
     res.writeHead(200);
-    res.end(JSON.stringify({ status: 'ok', version: VERSION, service: 'local-model-suitability-mcp', checked_at: nowISO() }));
+    res.end(JSON.stringify({ status: 'ok', version: VERSION, service: 'local-model-suitability-mcp', paid_keys_issued: apiKeys.size, checked_at: nowISO() }));
     return;
   }
 
@@ -481,7 +539,7 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
     res.writeHead(200);
-    res.end(JSON.stringify({ ...stats, version: VERSION, checked_at: nowISO() }));
+    res.end(JSON.stringify({ ...stats, version: VERSION, paid_keys_issued: apiKeys.size, checked_at: nowISO() }));
     return;
   }
 
@@ -496,6 +554,16 @@ const httpServer = createServer(async (req, res) => {
       homepage: 'https://kordagencies.com',
       author: 'ojas1',
     }));
+    return;
+  }
+
+  if (req.url === '/webhook/stripe' && req.method === 'POST') {
+    let body = ''; req.on('data', c => body += c);
+    req.on('end', async () => {
+      const result = await handleStripeWebhook(body);
+      res.writeHead(200);
+      res.end(JSON.stringify(result));
+    });
     return;
   }
 
