@@ -7,8 +7,9 @@ import https from 'https';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = '1.0.2';
+const VERSION = '1.0.3';
 const FREE_TIER_LIMIT = 20;
+const FREE_TIER_WARNING = 16; // warn at 80% usage
 const STATS_FILE = '/tmp/lms_stats.json';
 
 const LEGAL_DISCLAIMER =
@@ -67,7 +68,8 @@ function checkFreeTier(apiKey, clientIp) {
   }
   stats.free_tier_calls_by_ip[key][monthKey] = monthCalls + 1;
   saveStats(stats);
-  return { allowed: true, paid: false, remaining: FREE_TIER_LIMIT - monthCalls - 1 };
+  const remaining = FREE_TIER_LIMIT - monthCalls - 1;
+  return { allowed: true, paid: false, remaining };
 }
 
 // ─── Model knowledge base ─────────────────────────────────────────────────────
@@ -303,7 +305,7 @@ async function handleRequest(request) {
           {
             type: 'text',
             text: JSON.stringify({
-              error: `Free tier limit of ${FREE_TIER_LIMIT} evaluations/month reached. You have seen it work — upgrade to Pro ($99/month) at kordagencies.com to continue.`,
+              error: `Free tier limit of ${FREE_TIER_LIMIT} evaluations/month reached. You have seen it work — upgrade to Pro ($99/month) at kordagencies.com/buy to continue.`,
               upgrade_url: 'https://kordagencies.com',
               _disclaimer: LEGAL_DISCLAIMER,
             }),
@@ -355,32 +357,55 @@ async function handleRequest(request) {
       };
     }
 
-    const response = {
+    // ─── Build response — paid gets full response, free gets partial ──────────
+    const isWarning = !tierCheck.paid && tierCheck.remaining <= (FREE_TIER_LIMIT - FREE_TIER_WARNING);
+
+    const baseResponse = {
       verdict: assessment.verdict,
       confidence: assessment.confidence,
       summary: assessment.summary,
       model_evaluated: args.local_model,
-      model_profile: modelInfo
-        ? {
-            parameter_count: modelInfo.params,
-            tier: modelInfo.tier,
-            known_strengths: modelInfo.strengths,
-            known_weaknesses: modelInfo.weaknesses,
-          }
-        : { note: 'Model not in knowledge base — assessment based on name and size patterns' },
       task_complexity: assessment.task_complexity,
-      reasoning: assessment.reasoning,
-      recommended_cloud_model: assessment.recommended_model || null,
-      fallback_advice: assessment.fallback_advice,
       analysis_type: 'AI-powered — NOT a simple benchmark lookup',
-      free_tier_remaining: tierCheck.paid ? 'unlimited' : tierCheck.remaining,
       checked_at: nowISO(),
       _disclaimer: LEGAL_DISCLAIMER,
     };
 
-    return {
-      content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
-    };
+    if (tierCheck.paid) {
+      // Full response for paid tier
+      const response = {
+        ...baseResponse,
+        model_profile: modelInfo
+          ? {
+              parameter_count: modelInfo.params,
+              tier: modelInfo.tier,
+              known_strengths: modelInfo.strengths,
+              known_weaknesses: modelInfo.weaknesses,
+            }
+          : { note: 'Model not in knowledge base — assessment based on name and size patterns' },
+        reasoning: assessment.reasoning,
+        recommended_cloud_model: assessment.recommended_model || null,
+        fallback_advice: assessment.fallback_advice,
+        free_tier_remaining: 'unlimited',
+      };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
+      };
+    } else {
+      // Partial response for free tier — verdict + summary visible, detail gated
+      const response = {
+        ...baseResponse,
+        free_tier_remaining: tierCheck.remaining,
+        _upgrade_note: `Free tier: ${tierCheck.remaining} of ${FREE_TIER_LIMIT} evaluations remaining this month. Upgrade to Pro ($99/month) at kordagencies.com for full reasoning breakdown, failure mode analysis, model profile, and fallback advice.`,
+        _gated_fields: ['model_profile', 'reasoning', 'recommended_cloud_model', 'fallback_advice'],
+      };
+      if (isWarning) {
+        response._notice = `Warning: only ${tierCheck.remaining} free evaluation${tierCheck.remaining === 1 ? '' : 's'} left this month. Upgrade to Pro at kordagencies.com to avoid interruption.`;
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
+      };
+    }
   }
 
   if (method === 'health') {
@@ -418,7 +443,6 @@ function depCheck(hostname, path, headers) {
 // ─── HTTP server ──────────────────────────────────────────────────────────────
 
 const httpServer = createServer(async (req, res) => {
-  // CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, cors);
     res.end();
@@ -428,14 +452,12 @@ const httpServer = createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
   Object.entries(cors).forEach(([k, v]) => res.setHeader(k, v));
 
-  // Health — support HEAD for UptimeRobot
   if (req.url === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
     res.writeHead(200);
     res.end(JSON.stringify({ status: 'ok', version: VERSION, service: 'local-model-suitability-mcp', checked_at: nowISO() }));
     return;
   }
 
-  // Deps — checks Anthropic API (only external dependency)
   if (req.url === '/deps' && req.method === 'GET') {
     const anthropicCheck = await depCheck('api.anthropic.com', '/v1/models', {
       'x-api-key': process.env.ANTHROPIC_API_KEY || '',
@@ -446,14 +468,11 @@ const httpServer = createServer(async (req, res) => {
       server: 'local-model-suitability-mcp',
       version: VERSION,
       checked_at: nowISO(),
-      dependencies: {
-        anthropic: anthropicCheck,
-      },
+      dependencies: { anthropic: anthropicCheck },
     }));
     return;
   }
 
-  // Stats
   if (req.url === '/stats' && req.method === 'GET') {
     const statsKey = req.headers['x-stats-key'];
     if (statsKey !== process.env.STATS_KEY) {
@@ -466,7 +485,6 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // Well-known server card (required for Smithery)
   if (req.url === '/.well-known/mcp/server-card.json') {
     res.writeHead(200);
     res.end(JSON.stringify({
