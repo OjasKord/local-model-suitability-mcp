@@ -2,10 +2,12 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { createServer } from 'http';
+import https from 'https';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.2';
 const FREE_TIER_LIMIT = 20;
 const STATS_FILE = '/tmp/lms_stats.json';
 
@@ -16,6 +18,12 @@ const LEGAL_DISCLAIMER =
   'Operator must independently validate model output quality for production workloads. ' +
   'Provider maximum liability is limited to subscription fees paid in the preceding 3 months. ' +
   'Full terms: kordagencies.com/terms.html';
+
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
+  'Access-Control-Allow-Headers': 'Content-Type, x-api-key, x-stats-key',
+};
 
 function nowISO() {
   return new Date().toISOString();
@@ -108,7 +116,6 @@ const MODEL_KNOWLEDGE = {
 function lookupModel(modelName) {
   const normalized = modelName.toLowerCase().trim();
   if (MODEL_KNOWLEDGE[normalized]) return MODEL_KNOWLEDGE[normalized];
-  // Fuzzy match — strip version tags like :latest
   const base = normalized.replace(/:latest$/, '');
   for (const key of Object.keys(MODEL_KNOWLEDGE)) {
     if (key.startsWith(base) || base.startsWith(key.split(':')[0])) {
@@ -135,13 +142,13 @@ async function evaluateWithClaude(params) {
     model_info,
   } = params;
 
-  const systemPrompt = `You are an expert in LLM capabilities and deployment strategy. 
-Your job is to give AI agents a clear, honest verdict on whether a specific local model 
-is suitable for a specific task — so agents can make intelligent decisions about 
+  const systemPrompt = `You are an expert in LLM capabilities and deployment strategy.
+Your job is to give AI agents a clear, honest verdict on whether a specific local model
+is suitable for a specific task — so agents can make intelligent decisions about
 cost, privacy, latency, and quality without guessing.
 
-You understand the real-world capability gaps between model sizes and how they affect 
-production workloads. You do not hedge excessively. You give a clear verdict with 
+You understand the real-world capability gaps between model sizes and how they affect
+production workloads. You do not hedge excessively. You give a clear verdict with
 clear reasoning that an agent can act on immediately.
 
 Always respond in valid JSON only. No markdown, no preamble.`;
@@ -174,7 +181,7 @@ Respond with this exact JSON structure:
 }`;
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 1000,
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
@@ -281,13 +288,11 @@ async function handleRequest(request) {
       throw { code: -32601, message: `Unknown tool: ${name}` };
     }
 
-    // Stats
     stats.total_requests++;
     stats.tool_usage.evaluate_local_model_suitability =
       (stats.tool_usage.evaluate_local_model_suitability || 0) + 1;
     saveStats(stats);
 
-    // Free tier check
     const apiKey = request._meta?.apiKey || null;
     const clientIp = request._meta?.clientIp || null;
     const tierCheck = checkFreeTier(apiKey, clientIp);
@@ -307,7 +312,6 @@ async function handleRequest(request) {
       };
     }
 
-    // Validate required fields
     const required = [
       'task_description',
       'local_model',
@@ -318,17 +322,12 @@ async function handleRequest(request) {
     ];
     for (const field of required) {
       if (!args[field]) {
-        throw {
-          code: -32602,
-          message: `Missing required parameter: ${field}`,
-        };
+        throw { code: -32602, message: `Missing required parameter: ${field}` };
       }
     }
 
-    // Look up model knowledge
     const modelInfo = lookupModel(args.local_model);
 
-    // Claude brain assessment
     let assessment;
     try {
       assessment = await evaluateWithClaude({
@@ -356,7 +355,6 @@ async function handleRequest(request) {
       };
     }
 
-    // Build response
     const response = {
       verdict: assessment.verdict,
       confidence: assessment.confidence,
@@ -385,7 +383,6 @@ async function handleRequest(request) {
     };
   }
 
-  // Health / stats via special methods
   if (method === 'health') {
     return { status: 'ok', version: VERSION, checked_at: nowISO() };
   }
@@ -393,19 +390,83 @@ async function handleRequest(request) {
   throw { code: -32601, message: `Method not found: ${method}` };
 }
 
-// ─── HTTP server (for health + stats endpoints) ───────────────────────────────
+// ─── /deps helper ─────────────────────────────────────────────────────────────
 
-import { createServer } from 'http';
+function depCheck(hostname, path, headers) {
+  return new Promise((resolve) => {
+    const r = https.request(
+      {
+        hostname,
+        path,
+        method: 'GET',
+        headers: Object.assign({ 'User-Agent': 'MCP-HealthCheck/1.0' }, headers || {}),
+      },
+      (res2) => {
+        res2.resume();
+        resolve({ ok: res2.statusCode < 500, status: res2.statusCode });
+      }
+    );
+    r.on('error', () => resolve({ ok: false, status: 0, error: 'unreachable' }));
+    r.setTimeout(5000, () => {
+      r.destroy();
+      resolve({ ok: false, status: 0, error: 'timeout' });
+    });
+    r.end();
+  });
+}
 
-const httpServer = createServer((req, res) => {
-  res.setHeader('Content-Type', 'application/json');
+// ─── HTTP server ──────────────────────────────────────────────────────────────
 
-  if (req.url === '/health') {
-    res.writeHead(200);
-    res.end(JSON.stringify({ status: 'ok', version: VERSION, checked_at: nowISO() }));
+const httpServer = createServer(async (req, res) => {
+  // CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, cors);
+    res.end();
     return;
   }
 
+  res.setHeader('Content-Type', 'application/json');
+  Object.entries(cors).forEach(([k, v]) => res.setHeader(k, v));
+
+  // Health — support HEAD for UptimeRobot
+  if (req.url === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
+    res.writeHead(200);
+    res.end(JSON.stringify({ status: 'ok', version: VERSION, service: 'local-model-suitability-mcp', checked_at: nowISO() }));
+    return;
+  }
+
+  // Deps — checks Anthropic API (only external dependency)
+  if (req.url === '/deps' && req.method === 'GET') {
+    const anthropicCheck = await depCheck('api.anthropic.com', '/v1/models', {
+      'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+      'anthropic-version': '2023-06-01',
+    });
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      server: 'local-model-suitability-mcp',
+      version: VERSION,
+      checked_at: nowISO(),
+      dependencies: {
+        anthropic: anthropicCheck,
+      },
+    }));
+    return;
+  }
+
+  // Stats
+  if (req.url === '/stats' && req.method === 'GET') {
+    const statsKey = req.headers['x-stats-key'];
+    if (statsKey !== process.env.STATS_KEY) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Unauthorised' }));
+      return;
+    }
+    res.writeHead(200);
+    res.end(JSON.stringify({ ...stats, version: VERSION, checked_at: nowISO() }));
+    return;
+  }
+
+  // Well-known server card (required for Smithery)
   if (req.url === '/.well-known/mcp/server-card.json') {
     res.writeHead(200);
     res.end(JSON.stringify({
@@ -415,20 +476,8 @@ const httpServer = createServer((req, res) => {
       tools: [TOOL_DEFINITION],
       transport: 'stdio',
       homepage: 'https://kordagencies.com',
-      author: 'ojas1'
+      author: 'ojas1',
     }));
-    return;
-  }
-
-  if (req.url === '/stats') {
-    const statsKey = req.headers['x-stats-key'];
-    if (statsKey !== process.env.STATS_KEY) {
-      res.writeHead(401);
-      res.end(JSON.stringify({ error: 'Unauthorised' }));
-      return;
-    }
-    res.writeHead(200);
-    res.end(JSON.stringify({ ...stats, version: VERSION, checked_at: nowISO() }));
     return;
   }
 
