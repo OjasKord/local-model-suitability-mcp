@@ -538,8 +538,21 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Unauthorised' }));
       return;
     }
+    // Compute summary fields the dashboard expects (matches Bizfile pattern)
+    const ipMap = stats.free_tier_calls_by_ip || {};
+    const free_tier_unique_ips = Object.keys(ipMap).length;
+    const free_tier_total_calls = Object.values(ipMap).reduce((total, monthMap) => {
+      return total + Object.values(monthMap).reduce((a, b) => a + b, 0);
+    }, 0);
     res.writeHead(200);
-    res.end(JSON.stringify({ ...stats, version: VERSION, paid_keys_issued: apiKeys.size, checked_at: nowISO() }));
+    res.end(JSON.stringify({
+      ...stats,
+      free_tier_unique_ips,
+      free_tier_total_calls,
+      version: VERSION,
+      paid_keys_issued: apiKeys.size,
+      checked_at: nowISO()
+    }));
     return;
   }
 
