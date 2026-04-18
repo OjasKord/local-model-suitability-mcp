@@ -44,7 +44,34 @@ async function sendApiKeyEmail(email, apiKey, plan) {
   return sendEmail(email, 'Your Local Model Suitability MCP ' + planLabel + ' API Key', html);
 }
 
-async function handleStripeWebhook(body) {
+function verifyStripeSignature(body, sig, secret) {
+  if (!secret) return false;
+  if (!sig) return false;
+  try {
+    const parts = sig.split(',').reduce((acc, part) => {
+      const [k, v] = part.split('=');
+      acc[k] = v;
+      return acc;
+    }, {});
+    const timestamp = parts['t'];
+    const expected = parts['v1'];
+    if (!timestamp || !expected) return false;
+    const signed = timestamp + '.' + body;
+    const computed = crypto.createHmac('sha256', secret).update(signed, 'utf8').digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(expected));
+  } catch(e) { return false; }
+}
+
+async function handleStripeWebhook(body, sig) {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) {
+    process.stderr.write('[lms] STRIPE_WEBHOOK_SECRET not set — rejecting webhook\n');
+    return { error: 'Webhook secret not configured', status: 400 };
+  }
+  if (!verifyStripeSignature(body, sig, secret)) {
+    process.stderr.write('[lms] Invalid Stripe signature — rejecting webhook\n');
+    return { error: 'Invalid signature', status: 400 };
+  }
   try {
     const event = JSON.parse(body);
     if (event.type === 'checkout.session.completed') {
@@ -60,7 +87,7 @@ async function handleStripeWebhook(body) {
       }
     }
     return { received: true, type: event.type };
-  } catch(e) { return { error: e.message }; }
+  } catch(e) { return { error: e.message, status: 400 }; }
 }
 const STATS_FILE = '/tmp/lms_stats.json';
 
@@ -573,8 +600,11 @@ const httpServer = createServer(async (req, res) => {
   if (req.url === '/webhook/stripe' && req.method === 'POST') {
     let body = ''; req.on('data', c => body += c);
     req.on('end', async () => {
-      const result = await handleStripeWebhook(body);
-      res.writeHead(200);
+      const sig = req.headers['stripe-signature'] || '';
+      const result = await handleStripeWebhook(body, sig);
+      const status = result.status || 200;
+      delete result.status;
+      res.writeHead(status);
       res.end(JSON.stringify(result));
     });
     return;
