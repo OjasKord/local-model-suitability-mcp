@@ -1,661 +1,447 @@
-#!/usr/bin/env node
-
-import Anthropic from '@anthropic-ai/sdk';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { createServer } from 'http';
-import https from 'https';
-import { createRequire } from 'module';
-const require2 = createRequire(import.meta.url);
-const crypto = require2('crypto');
-const httpsLib = https;
+import { createHmac, timingSafeEqual } from 'crypto';
+import { readFileSync, writeFileSync } from 'fs';
+import Anthropic from '@anthropic-ai/sdk';
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+const VERSION = '1.1.0';
+const PERSIST_FILE = '/tmp/lms_stats.json';
+const LEGAL_DISCLAIMER = 'AI-powered routing analysis. We do not log or store your task content. Results are for cost-optimisation guidance only. Provider maximum liability is limited to subscription fees paid in the preceding 3 months. Full terms: kordagencies.com/terms.html';
 
-const VERSION = '1.0.4';
-const FREE_TIER_LIMIT = 20;
-const FREE_TIER_WARNING = 16; // warn at 80% usage
-const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
-const PLAN_LIMITS = { pro: 2000, enterprise: Infinity };
-const apiKeys = new Map();
+function nowISO() { return new Date().toISOString(); }
 
-function generateApiKey() { return 'lms_' + crypto.randomBytes(24).toString('hex'); }
-function getPlanFromProduct(name) {
-  if (!name) return 'pro';
-  return name.toLowerCase().includes('enterprise') ? 'enterprise' : 'pro';
-}
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
+  'Access-Control-Allow-Headers': 'Content-Type, x-api-key, x-stats-key'
+};
 
-async function sendEmail(to, subject, html) {
-  return new Promise((resolve) => {
-    const body = JSON.stringify({ from: 'Local Model Suitability MCP <ojas@kordagencies.com>', to: [to], subject, html });
-    const req2 = httpsLib.request({
-      hostname: 'api.resend.com', path: '/emails', method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-    }, res2 => { let d = ''; res2.on('data', c => d += c); res2.on('end', () => resolve({ status: res2.statusCode, body: d })); });
-    req2.on('error', e => resolve({ error: e.message }));
-    req2.write(body); req2.end();
-  });
-}
+// ── Stats persistence ─────────────────────────────────────────────────────────
+let stats = {
+  tool_usage: {},
+  recent_calls: [],
+  free_tier_calls_by_ip: {}
+};
 
-async function sendApiKeyEmail(email, apiKey, plan) {
-  const planLabel = plan === 'enterprise' ? 'Enterprise' : 'Pro';
-  const limit = plan === 'enterprise' ? 'Unlimited' : '2,000';
-  const price = plan === 'enterprise' ? '$299' : '$99';
-  const html = '<!DOCTYPE html><html><body style="font-family:monospace;background:#080A0F;color:#E8EDF5;padding:40px;max-width:600px;margin:0 auto"><div style="border:1px solid rgba(125,211,252,0.3);border-radius:8px;padding:32px"><div style="color:#7DD3FC;font-size:13px;letter-spacing:0.2em;text-transform:uppercase;margin-bottom:24px">Local Model Suitability MCP - ' + planLabel + ' Plan</div><h1 style="font-size:24px;font-weight:700;margin-bottom:8px;color:#FFFFFF">Your API key is ready.</h1><div style="background:#141B24;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:20px;margin-bottom:24px"><div style="color:#5A6478;font-size:11px;text-transform:uppercase;margin-bottom:8px">Your API Key</div><div style="color:#7DD3FC;font-size:14px;word-break:break-all">' + apiKey + '</div></div><div style="background:#141B24;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:20px;margin-bottom:24px"><div style="color:#5A6478;font-size:11px;text-transform:uppercase;margin-bottom:8px">MCP Config</div><div style="color:#86EFAC;font-size:12px">{"local-model-suitability":{"url":"https://local-model-suitability-mcp-production.up.railway.app","headers":{"x-api-key":"' + apiKey + '"}}}</div></div><div style="background:#141B24;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:20px;margin-bottom:24px"><div style="color:#E8EDF5;font-size:13px">Plan: ' + planLabel + ' | Evaluations: ' + limit + '/month | ' + price + '/month</div></div><div style="background:#0D1219;border-radius:6px;padding:16px;margin-bottom:24px;font-size:11px;color:#5A6478;line-height:1.7">Results are AI-powered assessments for informational purposes only. We do not log your query content. Verify model output quality independently. Liability capped at 3 months fees. Full terms: kordagencies.com/terms.html</div><p style="color:#5A6478;font-size:12px">Questions? ojas@kordagencies.com</p></div></body></html>';
-  return sendEmail(email, 'Your Local Model Suitability MCP ' + planLabel + ' API Key', html);
-}
-
-function verifyStripeSignature(body, sig, secret) {
-  if (!secret) return false;
-  if (!sig) return false;
+function loadStats() {
   try {
-    const parts = sig.split(',').reduce((acc, part) => {
-      const [k, v] = part.split('=');
-      acc[k] = v;
-      return acc;
-    }, {});
+    const data = JSON.parse(readFileSync(PERSIST_FILE, 'utf8'));
+    stats = data;
+    console.log('[lms] stats loaded from disk');
+  } catch(e) {
+    console.log('[lms] no stats file found — fresh start');
+  }
+}
+
+function saveStats() {
+  try { writeFileSync(PERSIST_FILE, JSON.stringify(stats)); } catch(e) {}
+}
+
+loadStats();
+
+// ── API key store ─────────────────────────────────────────────────────────────
+const apiKeys = new Map(); // key → { plan, email, created }
+
+// ── Free tier tracking ────────────────────────────────────────────────────────
+const FREE_TIER_LIMIT = 20;
+const MONTH_KEY = () => new Date().toISOString().slice(0, 7); // YYYY-MM
+
+function getFreeTierCount(ip) {
+  const month = MONTH_KEY();
+  return stats.free_tier_calls_by_ip?.[ip]?.[month] || 0;
+}
+
+function incrementFreeTier(ip) {
+  const month = MONTH_KEY();
+  if (!stats.free_tier_calls_by_ip[ip]) stats.free_tier_calls_by_ip[ip] = {};
+  stats.free_tier_calls_by_ip[ip][month] = (stats.free_tier_calls_by_ip[ip][month] || 0) + 1;
+  saveStats();
+}
+
+function checkAccess(ip, apiKey) {
+  if (apiKey && apiKeys.has(apiKey)) {
+    return { allowed: true, tier: 'paid', plan: apiKeys.get(apiKey).plan };
+  }
+  const count = getFreeTierCount(ip);
+  const remaining = FREE_TIER_LIMIT - count;
+  if (remaining <= 0) {
+    return { allowed: false, tier: 'free', remaining: 0 };
+  }
+  return { allowed: true, tier: 'free', remaining, count };
+}
+
+function logCall(tool, tier, ip) {
+  stats.tool_usage[tool] = (stats.tool_usage[tool] || 0) + 1;
+  stats.recent_calls.push({ tool, tier, time: nowISO(), ip });
+  if (stats.recent_calls.length > 100) stats.recent_calls = stats.recent_calls.slice(-100);
+  saveStats();
+}
+
+// ── Anthropic client ──────────────────────────────────────────────────────────
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// ── Cloud pricing reference (approximate, per 1K tokens, mid-2026) ───────────
+const CLOUD_PRICING = {
+  'claude-sonnet': 0.003,
+  'claude-opus': 0.015,
+  'gpt-4o': 0.005,
+  'gpt-4o-mini': 0.00015,
+  'gemini-1.5-pro': 0.00125
+};
+
+// ── Tool definition ───────────────────────────────────────────────────────────
+const TOOL_DEFINITION = {
+  name: 'check_local_viability',
+  description: `Call this tool BEFORE every cloud inference call to check whether a local model can handle this task instead. Cloud inference costs money on every call — this tool tells you when you are wasting it. If verdict is LOCAL, route to your local model (Ollama, LM Studio, llama.cpp etc.) and skip the cloud call entirely. Only send to cloud when this tool says you must. Local is always the preferred option. Cloud must justify itself. AI-powered analysis — NOT a simple lookup. LEGAL NOTICE: Results are for cost-optimisation guidance only. We do not log your task content. Full terms: kordagencies.com/terms.html. Free tier: first 20 calls/month, no API key needed.`,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      task: {
+        type: 'string',
+        description: 'The exact task you are about to send to a cloud model. Be specific — include what the input is and what output you need.'
+      },
+      quality_threshold: {
+        type: 'string',
+        enum: ['PRODUCTION', 'PROTOTYPE', 'BEST_EFFORT'],
+        description: 'PRODUCTION = output quality matters and errors are costly. PROTOTYPE = approximate results acceptable. BEST_EFFORT = speed and cost trump quality. Defaults to PRODUCTION.'
+      },
+      data_sensitivity: {
+        type: 'string',
+        enum: ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL'],
+        description: 'CONFIDENTIAL forces LOCAL verdict regardless of task complexity — data must not leave the machine. Defaults to PUBLIC.'
+      }
+    },
+    required: ['task']
+  }
+};
+
+// ── Core AI function ──────────────────────────────────────────────────────────
+async function checkLocalViability(task, qualityThreshold, dataSensitivity) {
+  const quality = qualityThreshold || 'PRODUCTION';
+  const sensitivity = dataSensitivity || 'PUBLIC';
+
+  // CONFIDENTIAL data always forces LOCAL regardless of task complexity
+  if (sensitivity === 'CONFIDENTIAL') {
+    return {
+      verdict: 'LOCAL',
+      confidence: 'HIGH',
+      reason: 'Data is marked CONFIDENTIAL — must not leave the machine. Route to local model regardless of task complexity.',
+      estimated_cost_saving: 'Full cloud inference cost saved on every call',
+      recommended_local_models: ['llama3.2:8b', 'mistral-7b', 'phi3:medium', 'deepseek-r1:7b'],
+      cloud_justified_reason: null,
+      data_sensitivity_override: true,
+      analysis_type: 'AI-powered cost routing — NOT a simple lookup',
+      _disclaimer: LEGAL_DISCLAIMER
+    };
+  }
+
+  const systemPrompt = `You are a model routing expert. Your job is to determine whether a given task can be handled by a local LLM (running on the user's machine via Ollama, LM Studio, or llama.cpp) instead of an expensive cloud API.
+
+CORE PRINCIPLE: Cloud inference is expensive. Local is always preferred. Cloud must justify itself.
+
+Quality threshold for this request: ${quality}
+- PRODUCTION: Output quality matters. Errors have real consequences. Be conservative — only route to LOCAL if confident the task is genuinely within local model capability.
+- PROTOTYPE: Approximate results acceptable. Be liberal — route to LOCAL unless the task clearly requires cloud reasoning depth.
+- BEST_EFFORT: Speed and cost trump quality. Route to LOCAL unless the task is genuinely impossible for a 7B model.
+
+LOCAL is appropriate when:
+- Simple text operations: summarisation, extraction, classification, formatting, translation of common languages
+- Straightforward Q&A on general knowledge already in training data
+- Code generation for common patterns in popular languages
+- Sentiment analysis, entity recognition, basic NLP tasks
+- Any task a competent 7B-13B parameter model can handle at the required quality level
+
+CLOUD is justified when:
+- Complex multi-step reasoning chains that require deep logical consistency
+- Tasks requiring very recent knowledge (post-2024 events, real-time data)
+- Highly specialised professional domains where hallucination is dangerous (medical diagnosis, legal interpretation, financial advice)
+- Long-context tasks requiring coherence across 50K+ tokens
+- Tasks where the quality bar is extremely high and local models consistently fail (PRODUCTION threshold only)
+- Complex code requiring broad library knowledge, security awareness, or architectural decisions
+
+Respond ONLY with a JSON object — no markdown, no explanation outside the JSON:
+{
+  "verdict": "LOCAL" | "CLOUD" | "EITHER",
+  "confidence": "HIGH" | "MEDIUM" | "LOW",
+  "reason": "specific one-sentence reason — name the task type and why local is/isn't sufficient",
+  "estimated_cost_saving": "approximate saving per call if LOCAL (e.g. '$0.002-0.008 saved per call at claude-sonnet pricing')",
+  "recommended_local_models": ["model1", "model2"] (if LOCAL or EITHER — specific Ollama model names),
+  "cloud_justified_reason": "specific reason why local is insufficient" (only if CLOUD verdict, otherwise null)
+}`;
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 500,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: `Task to evaluate: ${task}` }]
+  });
+
+  const raw = response.content[0].text.trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch(e) {
+    // Fallback if model doesn't return clean JSON
+    parsed = {
+      verdict: 'EITHER',
+      confidence: 'LOW',
+      reason: 'Could not parse routing analysis — defaulting to EITHER. Evaluate manually.',
+      estimated_cost_saving: 'Unknown',
+      recommended_local_models: ['llama3.2:8b', 'mistral-7b'],
+      cloud_justified_reason: null
+    };
+  }
+
+  return {
+    ...parsed,
+    task_quality_threshold: quality,
+    data_sensitivity: sensitivity,
+    analysis_type: 'AI-powered cost routing — NOT a simple lookup',
+    checked_at: nowISO(),
+    _disclaimer: LEGAL_DISCLAIMER
+  };
+}
+
+// ── Stripe webhook ────────────────────────────────────────────────────────────
+function verifyStripeSignature(body, sig, secret) {
+  if (!secret || !sig) return false;
+  try {
+    const parts = sig.split(',').reduce((acc, part) => { const [k, v] = part.split('='); acc[k] = v; return acc; }, {});
     const timestamp = parts['t'];
     const expected = parts['v1'];
     if (!timestamp || !expected) return false;
     const signed = timestamp + '.' + body;
-    const computed = crypto.createHmac('sha256', secret).update(signed, 'utf8').digest('hex');
-    return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(expected));
+    const computed = createHmac('sha256', secret).update(signed, 'utf8').digest('hex');
+    return timingSafeEqual(Buffer.from(computed), Buffer.from(expected));
   } catch(e) { return false; }
 }
 
 async function handleStripeWebhook(body, sig) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!secret) {
-    process.stderr.write('[lms] STRIPE_WEBHOOK_SECRET not set — rejecting webhook\n');
-    return { error: 'Webhook secret not configured', status: 400 };
-  }
-  if (!verifyStripeSignature(body, sig, secret)) {
-    process.stderr.write('[lms] Invalid Stripe signature — rejecting webhook\n');
-    return { error: 'Invalid signature', status: 400 };
-  }
-  try {
-    const event = JSON.parse(body);
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      const email = session.customer_email || session.customer_details?.email;
-      const plan = getPlanFromProduct(session.metadata?.product_name || '');
-      if (email) {
-        const apiKey = generateApiKey();
-        apiKeys.set(apiKey, { email, plan, createdAt: nowISO(), calls: 0, limit: PLAN_LIMITS[plan] });
-        await sendApiKeyEmail(email, apiKey, plan);
-        process.stderr.write('[lms] API key created for ' + email + ' (' + plan + ')\n');
-        return { success: true, email, plan };
-      }
-    }
-    return { received: true, type: event.type };
-  } catch(e) { return { error: e.message, status: 400 }; }
-}
-const STATS_FILE = '/tmp/lms_stats.json';
+  if (!secret) return { error: 'Webhook secret not configured', status: 400 };
+  if (!verifyStripeSignature(body, sig, secret)) return { error: 'Invalid signature', status: 400 };
 
-const LEGAL_DISCLAIMER =
-  'Results are AI-powered assessments based on known model benchmarks and capabilities. ' +
-  'We do not log or store your query content. ' +
-  'Results are for informational purposes only and do not constitute technical guarantees. ' +
-  'Operator must independently validate model output quality for production workloads. ' +
-  'Provider maximum liability is limited to subscription fees paid in the preceding 3 months. ' +
-  'Full terms: kordagencies.com/terms.html';
+  let event;
+  try { event = JSON.parse(body); } catch(e) { return { error: 'Invalid JSON', status: 400 }; }
 
-const cors = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
-  'Access-Control-Allow-Headers': 'Content-Type, x-api-key, x-stats-key',
-};
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const email = session.customer_details?.email;
+    const plan = session.metadata?.plan || 'pro';
+    const apiKey = 'lms_' + createHmac('sha256', secret).update(email + Date.now()).digest('hex').slice(0, 32);
 
-function nowISO() {
-  return new Date().toISOString();
-}
+    apiKeys.set(apiKey, { plan, email, created: nowISO() });
+    saveStats();
 
-// ─── Stats persistence ────────────────────────────────────────────────────────
+    // Send API key via Resend
+    if (process.env.RESEND_API_KEY && email) {
+      const mcpConfig = JSON.stringify({
+        "mcpServers": {
+          "local-model-suitability": {
+            "command": "npx",
+            "args": ["-y", "local-model-suitability-mcp"],
+            "env": { "API_KEY": apiKey }
+          }
+        }
+      }, null, 2);
 
-function loadStats() {
-  try {
-    if (existsSync(STATS_FILE)) {
-      return JSON.parse(readFileSync(STATS_FILE, 'utf8'));
-    }
-  } catch (_) {}
-  return {
-    total_requests: 0,
-    tool_usage: { evaluate_local_model_suitability: 0 },
-    free_tier_calls_by_ip: {},
-    start_time: nowISO(),
-  };
-}
-
-function saveStats(stats) {
-  try {
-    writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2));
-  } catch (_) {}
-}
-
-const stats = loadStats();
-
-// ─── Free tier enforcement ────────────────────────────────────────────────────
-
-function checkFreeTier(apiKey, clientIp) {
-  if (apiKey) {
-    const record = apiKeys.get(apiKey);
-    if (!record) return { allowed: false, paid: false, invalidKey: true };
-    if (record.limit !== Infinity && record.calls >= record.limit) return { allowed: false, paid: true, limitReached: true };
-    record.calls++;
-    return { allowed: true, paid: true };
-  }
-  const key = clientIp || 'unknown';
-  const now = new Date();
-  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  if (!stats.free_tier_calls_by_ip[key]) stats.free_tier_calls_by_ip[key] = {};
-  const monthCalls = stats.free_tier_calls_by_ip[key][monthKey] || 0;
-  if (monthCalls >= FREE_TIER_LIMIT) {
-    return { allowed: false, paid: false, used: monthCalls };
-  }
-  stats.free_tier_calls_by_ip[key][monthKey] = monthCalls + 1;
-  saveStats(stats);
-  const remaining = FREE_TIER_LIMIT - monthCalls - 1;
-  return { allowed: true, paid: false, remaining };
-}
-
-// ─── Model knowledge base ─────────────────────────────────────────────────────
-
-const MODEL_KNOWLEDGE = {
-  // Llama family
-  'llama3.1:8b':   { params: '8B',  tier: 'small',  strengths: ['simple Q&A', 'basic summarisation', 'short classification', 'data extraction'], weaknesses: ['complex multi-step reasoning', 'long-context coherence', 'nuanced instruction following', 'code generation beyond simple scripts'], context_window: 128000 },
-  'llama3.1:70b':  { params: '70B', tier: 'large',  strengths: ['complex reasoning', 'code generation', 'nuanced analysis', 'long-context tasks'], weaknesses: ['frontier-level reasoning', 'very specialised domain knowledge'], context_window: 128000 },
-  'llama3.1:405b': { params: '405B',tier: 'frontier',strengths: ['frontier reasoning', 'complex code', 'deep analysis', 'long-context coherence'], weaknesses: ['hardware requirements are extreme'], context_window: 128000 },
-  'llama3.2:3b':   { params: '3B',  tier: 'tiny',   strengths: ['very simple classification', 'keyword extraction', 'structured data parsing'], weaknesses: ['any reasoning', 'multi-step tasks', 'creative generation', 'code'], context_window: 128000 },
-  'llama3.2:1b':   { params: '1B',  tier: 'tiny',   strengths: ['simple keyword extraction', 'basic yes/no classification'], weaknesses: ['almost everything beyond trivial tasks'], context_window: 128000 },
-
-  // Mistral family
-  'mistral:7b':        { params: '7B',  tier: 'small',  strengths: ['instruction following', 'simple reasoning', 'structured output', 'European language tasks'], weaknesses: ['complex multi-step reasoning', 'long document analysis'], context_window: 32000 },
-  'mixtral:8x7b':      { params: '47B', tier: 'medium', strengths: ['strong reasoning', 'code generation', 'multilingual', 'structured output'], weaknesses: ['frontier reasoning', 'very long contexts'], context_window: 32000 },
-  'mistral-nemo:12b':  { params: '12B', tier: 'small',  strengths: ['instruction following', 'simple to medium reasoning', 'multilingual'], weaknesses: ['complex reasoning', 'long-context tasks'], context_window: 128000 },
-
-  // Qwen family
-  'qwen2.5:7b':   { params: '7B',  tier: 'small',  strengths: ['coding', 'maths', 'structured output', 'multilingual'], weaknesses: ['complex reasoning', 'long-context coherence'], context_window: 128000 },
-  'qwen2.5:14b':  { params: '14B', tier: 'medium', strengths: ['strong coding', 'maths', 'reasoning', 'multilingual'], weaknesses: ['frontier-level reasoning'], context_window: 128000 },
-  'qwen2.5:32b':  { params: '32B', tier: 'large',  strengths: ['excellent coding', 'maths', 'complex reasoning', 'multilingual'], weaknesses: ['frontier reasoning on very hard tasks'], context_window: 128000 },
-  'qwen2.5:72b':  { params: '72B', tier: 'large',  strengths: ['frontier-adjacent reasoning', 'coding', 'maths', 'long context'], weaknesses: ['hardware requirements are high'], context_window: 128000 },
-
-  // Gemma family
-  'gemma2:2b':  { params: '2B',  tier: 'tiny',   strengths: ['simple classification', 'short Q&A', 'keyword extraction'], weaknesses: ['reasoning', 'multi-step tasks', 'code'], context_window: 8192 },
-  'gemma2:9b':  { params: '9B',  tier: 'small',  strengths: ['instruction following', 'simple reasoning', 'coding basics'], weaknesses: ['complex reasoning', 'long contexts'], context_window: 8192 },
-  'gemma2:27b': { params: '27B', tier: 'medium', strengths: ['solid reasoning', 'code generation', 'analysis'], weaknesses: ['frontier reasoning'], context_window: 8192 },
-
-  // Phi family
-  'phi3:mini':   { params: '3.8B', tier: 'tiny',   strengths: ['simple reasoning', 'code snippets', 'structured output'], weaknesses: ['complex multi-step tasks', 'long contexts'], context_window: 128000 },
-  'phi3:medium': { params: '14B',  tier: 'medium', strengths: ['reasoning', 'coding', 'maths', 'instruction following'], weaknesses: ['frontier reasoning'], context_window: 128000 },
-  'phi4':        { params: '14B',  tier: 'medium', strengths: ['strong reasoning', 'coding', 'maths', 'structured output'], weaknesses: ['frontier reasoning on hardest tasks'], context_window: 16000 },
-
-  // Code-specific
-  'codellama:7b':  { params: '7B',  tier: 'small',  strengths: ['code completion', 'simple code generation', 'code explanation'], weaknesses: ['complex architecture', 'multi-file reasoning', 'debugging complex bugs'], context_window: 16000 },
-  'codellama:34b': { params: '34B', tier: 'large',  strengths: ['complex code generation', 'multi-language', 'architecture reasoning'], weaknesses: ['frontier coding tasks'], context_window: 16000 },
-  'deepseek-coder:6.7b': { params: '6.7B', tier: 'small', strengths: ['code generation', 'code explanation', 'simple debugging'], weaknesses: ['complex multi-file reasoning'], context_window: 16000 },
-  'deepseek-coder:33b':  { params: '33B', tier: 'large',  strengths: ['complex code generation', 'debugging', 'architecture'], weaknesses: ['frontier coding'], context_window: 16000 },
-
-  // DeepSeek R1 family
-  'deepseek-r1:8b':  { params: '8B',  tier: 'small',  strengths: ['reasoning with chain-of-thought', 'maths', 'simple logic'], weaknesses: ['complex domain knowledge', 'very hard reasoning'], context_window: 128000 },
-  'deepseek-r1:32b': { params: '32B', tier: 'large',  strengths: ['strong reasoning', 'maths', 'coding', 'logic'], weaknesses: ['frontier reasoning'], context_window: 128000 },
-  'deepseek-r1:70b': { params: '70B', tier: 'large',  strengths: ['frontier-adjacent reasoning', 'maths', 'complex coding'], weaknesses: ['hardware requirements are very high'], context_window: 128000 },
-};
-
-function lookupModel(modelName) {
-  const normalized = modelName.toLowerCase().trim();
-  if (MODEL_KNOWLEDGE[normalized]) return MODEL_KNOWLEDGE[normalized];
-  const base = normalized.replace(/:latest$/, '');
-  for (const key of Object.keys(MODEL_KNOWLEDGE)) {
-    if (key.startsWith(base) || base.startsWith(key.split(':')[0])) {
-      return MODEL_KNOWLEDGE[key];
-    }
-  }
-  return null;
-}
-
-// ─── Claude brain ─────────────────────────────────────────────────────────────
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
-
-async function evaluateWithClaude(params) {
-  const {
-    task_description,
-    local_model,
-    quality_threshold,
-    use_case_type,
-    data_sensitivity,
-    latency_requirement,
-    model_info,
-  } = params;
-
-  const systemPrompt = `You are an expert in LLM capabilities and deployment strategy.
-Your job is to give AI agents a clear, honest verdict on whether a specific local model
-is suitable for a specific task — so agents can make intelligent decisions about
-cost, privacy, latency, and quality without guessing.
-
-You understand the real-world capability gaps between model sizes and how they affect
-production workloads. You do not hedge excessively. You give a clear verdict with
-clear reasoning that an agent can act on immediately.
-
-Always respond in valid JSON only. No markdown, no preamble.`;
-
-  const userPrompt = `Evaluate whether this local model is suitable for this task.
-
-TASK: ${task_description}
-LOCAL MODEL: ${local_model}
-${model_info ? `MODEL PROFILE: ${JSON.stringify(model_info)}` : 'MODEL PROFILE: Unknown model — assess based on name/size patterns'}
-QUALITY THRESHOLD: ${quality_threshold} (draft=errors acceptable, production=high accuracy required, critical=near-perfect required)
-USE CASE TYPE: ${use_case_type}
-DATA SENSITIVITY: ${data_sensitivity} (public=safe to send to cloud, internal=prefer local, confidential=must stay local)
-LATENCY REQUIREMENT: ${latency_requirement} (flexible=seconds ok, moderate=under 2s preferred, realtime=under 500ms required)
-
-Respond with this exact JSON structure:
-{
-  "verdict": "LOCAL" | "CLOUD" | "EITHER" | "NEITHER",
-  "confidence": "HIGH" | "MEDIUM" | "LOW",
-  "summary": "One sentence verdict an agent can act on immediately",
-  "reasoning": {
-    "quality_assessment": "Can this model reliably handle this task at the required quality level?",
-    "cost_impact": "What is the cost argument for local vs cloud here?",
-    "privacy_assessment": "What are the data exposure implications of cloud routing?",
-    "latency_assessment": "Will local inference meet the latency requirement?",
-    "failure_modes": "What specific failures should the agent watch for if using local?"
-  },
-  "recommended_model": "If verdict is CLOUD, suggest the most cost-effective cloud model for this task",
-  "fallback_advice": "If local model fails, what should the agent do?",
-  "task_complexity": "SIMPLE" | "MODERATE" | "COMPLEX" | "FRONTIER"
-}`;
-
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1000,
-    system: systemPrompt,
-    messages: [{ role: 'user', content: userPrompt }],
-  });
-
-  const text = response.content[0].text.trim();
-  return JSON.parse(text);
-}
-
-// ─── MCP Protocol ─────────────────────────────────────────────────────────────
-
-const TOOL_DEFINITION = {
-  name: 'evaluate_local_model_suitability',
-  description:
-    'Call this tool before executing any task where you have both a local model (Ollama, LM Studio, etc.) and a cloud API available. ' +
-    'Use it to avoid three expensive mistakes: (1) paying cloud rates for tasks a local model handles perfectly, ' +
-    '(2) sending sensitive or confidential data to cloud APIs unnecessarily, ' +
-    '(3) trusting a local model with tasks beyond its capability and getting silent quality failures. ' +
-    'Also use when you need to meet strict latency requirements and must decide whether local inference is fast enough. ' +
-    'Returns a structured verdict — LOCAL / CLOUD / EITHER / NEITHER — with specific reasoning about cost, privacy, quality risk, and failure modes for your exact task and model. ' +
-    'AI-powered assessment — NOT a simple benchmark lookup. ' +
-    'Free tier: first 20 evaluations/month, no API key needed. ' +
-    'Full terms: kordagencies.com/terms.html',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      task_description: {
-        type: 'string',
-        description:
-          'Describe the task you are about to run. Be specific — include the type of reasoning, expected output format, and any quality constraints. Example: "Classify customer support emails into 5 categories. Must be accurate enough for production routing — wrong classification costs money."',
-      },
-      local_model: {
-        type: 'string',
-        description:
-          'The local model name and size. Use Ollama-style naming where possible. Examples: llama3.1:8b, mistral:7b, qwen2.5:14b, phi4, deepseek-r1:32b',
-      },
-      quality_threshold: {
-        type: 'string',
-        enum: ['draft', 'production', 'critical'],
-        description:
-          'draft = errors acceptable, output will be reviewed by human. production = high accuracy required, output used directly. critical = near-perfect required, failures have significant consequences.',
-      },
-      use_case_type: {
-        type: 'string',
-        enum: [
-          'classification',
-          'summarisation',
-          'code_generation',
-          'reasoning',
-          'data_extraction',
-          'creative_writing',
-          'question_answering',
-          'translation',
-          'sentiment_analysis',
-          'other',
-        ],
-        description: 'The primary type of task the model will perform.',
-      },
-      data_sensitivity: {
-        type: 'string',
-        enum: ['public', 'internal', 'confidential'],
-        description:
-          'public = safe to send to any cloud API. internal = organisation data, prefer local. confidential = must stay on-device, cannot be sent to external APIs.',
-      },
-      latency_requirement: {
-        type: 'string',
-        enum: ['flexible', 'moderate', 'realtime'],
-        description:
-          'flexible = response in seconds is fine. moderate = under 2 seconds preferred. realtime = under 500ms required (e.g. streaming UI, voice agent).',
-      },
-    },
-    required: [
-      'task_description',
-      'local_model',
-      'quality_threshold',
-      'use_case_type',
-      'data_sensitivity',
-      'latency_requirement',
-    ],
-  },
-};
-
-// ─── Request handler ──────────────────────────────────────────────────────────
-
-async function handleRequest(request) {
-  const { method, params } = request;
-
-  if (method === 'initialize') {
-    return {
-      protocolVersion: '2024-11-05',
-      capabilities: { tools: {} },
-      serverInfo: { name: 'local-model-suitability-mcp', version: VERSION },
-    };
-  }
-
-  if (method === 'tools/list') {
-    return { tools: [TOOL_DEFINITION] };
-  }
-
-  if (method === 'tools/call') {
-    const { name, arguments: args } = params;
-
-    if (name !== 'evaluate_local_model_suitability') {
-      throw { code: -32601, message: `Unknown tool: ${name}` };
-    }
-
-    stats.total_requests++;
-    stats.tool_usage.evaluate_local_model_suitability =
-      (stats.tool_usage.evaluate_local_model_suitability || 0) + 1;
-    saveStats(stats);
-
-    const apiKey = request._meta?.apiKey || null;
-    const clientIp = request._meta?.clientIp || null;
-    const tierCheck = checkFreeTier(apiKey, clientIp);
-
-    if (!tierCheck.allowed) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: `Free tier limit of ${FREE_TIER_LIMIT} evaluations/month reached. You have seen it work — upgrade now:\nPro ($99/month): https://buy.stripe.com/00waEW6o5f1H5JO0h2ebu09\nEnterprise ($299/month): https://buy.stripe.com/6oU5kCcMt3iZc8c4xiebu0a`,
-              upgrade_url: 'https://kordagencies.com',
-              _disclaimer: LEGAL_DISCLAIMER,
-            }),
-          },
-        ],
-      };
-    }
-
-    const required = [
-      'task_description',
-      'local_model',
-      'quality_threshold',
-      'use_case_type',
-      'data_sensitivity',
-      'latency_requirement',
-    ];
-    for (const field of required) {
-      if (!args[field]) {
-        throw { code: -32602, message: `Missing required parameter: ${field}` };
-      }
-    }
-
-    const modelInfo = lookupModel(args.local_model);
-
-    let assessment;
-    try {
-      assessment = await evaluateWithClaude({
-        task_description: args.task_description,
-        local_model: args.local_model,
-        quality_threshold: args.quality_threshold,
-        use_case_type: args.use_case_type,
-        data_sensitivity: args.data_sensitivity,
-        latency_requirement: args.latency_requirement,
-        model_info: modelInfo,
-      });
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error:
-                'Assessment engine temporarily unavailable — this is not a problem with your query. Please retry in 30 seconds.',
-              checked_at: nowISO(),
-              _disclaimer: LEGAL_DISCLAIMER,
-            }),
-          },
-        ],
-      };
-    }
-
-    // ─── Build response — paid gets full response, free gets partial ──────────
-    const isWarning = !tierCheck.paid && tierCheck.remaining <= (FREE_TIER_LIMIT - FREE_TIER_WARNING);
-
-    const baseResponse = {
-      verdict: assessment.verdict,
-      confidence: assessment.confidence,
-      summary: assessment.summary,
-      model_evaluated: args.local_model,
-      task_complexity: assessment.task_complexity,
-      analysis_type: 'AI-powered — NOT a simple benchmark lookup',
-      checked_at: nowISO(),
-      _disclaimer: LEGAL_DISCLAIMER,
-    };
-
-    if (tierCheck.paid) {
-      // Full response for paid tier
-      const response = {
-        ...baseResponse,
-        model_profile: modelInfo
-          ? {
-              parameter_count: modelInfo.params,
-              tier: modelInfo.tier,
-              known_strengths: modelInfo.strengths,
-              known_weaknesses: modelInfo.weaknesses,
-            }
-          : { note: 'Model not in knowledge base — assessment based on name and size patterns' },
-        reasoning: assessment.reasoning,
-        recommended_cloud_model: assessment.recommended_model || null,
-        fallback_advice: assessment.fallback_advice,
-        free_tier_remaining: 'unlimited',
-      };
-      return {
-        content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
-      };
-    } else {
-      // Partial response for free tier — verdict + summary visible, detail gated
-      const response = {
-        ...baseResponse,
-        free_tier_remaining: tierCheck.remaining,
-        _upgrade_note: `Free tier: ${tierCheck.remaining} of ${FREE_TIER_LIMIT} evaluations remaining this month. Upgrade to Pro ($99/month) at kordagencies.com for full reasoning breakdown, failure mode analysis, model profile, and fallback advice.`,
-        _gated_fields: ['model_profile', 'reasoning', 'recommended_cloud_model', 'fallback_advice'],
-      };
-      if (isWarning) {
-        response._notice = `Warning: only ${tierCheck.remaining} free evaluation${tierCheck.remaining === 1 ? '' : 's'} left this month. Upgrade to Pro at kordagencies.com to avoid interruption.`;
-      }
-      return {
-        content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
-      };
+      await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: 'Kord Agencies <ojas@kordagencies.com>',
+          to: email,
+          subject: 'Your Local Model Suitability MCP API Key',
+          html: `<p>Thank you for subscribing to Local Model Suitability MCP (${plan} plan).</p>
+<p><strong>Your API Key:</strong> <code>${apiKey}</code></p>
+<p><strong>MCP Config:</strong></p>
+<pre>${mcpConfig}</pre>
+<p>Add the API key as the <code>x-api-key</code> header on every request, or set it in your MCP client config as shown above.</p>
+<p><strong>What this tool does:</strong> Checks whether each task can run on a local model instead of cloud — saving you money on every call that doesn't need cloud inference.</p>
+<p>Questions? Reply to this email.</p>
+<p style="font-size:12px;color:#666;">Results are for cost-optimisation guidance only. Provider maximum liability limited to subscription fees paid in preceding 3 months. Full terms: <a href="https://kordagencies.com/terms.html">kordagencies.com/terms.html</a></p>`
+        })
+      }).catch(e => console.error('[lms] Resend error:', e.message));
     }
   }
 
-  if (method === 'health') {
-    return { status: 'ok', version: VERSION, checked_at: nowISO() };
-  }
-
-  throw { code: -32601, message: `Method not found: ${method}` };
+  return { received: true, status: 200 };
 }
 
-// ─── /deps helper ─────────────────────────────────────────────────────────────
-
-function depCheck(hostname, path, headers) {
-  return new Promise((resolve) => {
-    const r = https.request(
-      {
-        hostname,
-        path,
-        method: 'GET',
-        headers: Object.assign({ 'User-Agent': 'MCP-HealthCheck/1.0' }, headers || {}),
-      },
-      (res2) => {
-        res2.resume();
-        resolve({ ok: res2.statusCode < 500, status: res2.statusCode });
-      }
-    );
-    r.on('error', () => resolve({ ok: false, status: 0, error: 'unreachable' }));
-    r.setTimeout(5000, () => {
-      r.destroy();
-      resolve({ ok: false, status: 0, error: 'timeout' });
-    });
-    r.end();
-  });
-}
-
-// ─── HTTP server ──────────────────────────────────────────────────────────────
-
-const httpServer = createServer(async (req, res) => {
+// ── HTTP server ───────────────────────────────────────────────────────────────
+const server = createServer(async (req, res) => {
+  // CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, cors);
     res.end();
     return;
   }
 
-  res.setHeader('Content-Type', 'application/json');
-  Object.entries(cors).forEach(([k, v]) => res.setHeader(k, v));
+  const clientIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+  const apiKey = req.headers['x-api-key'] || null;
 
+  // Health
   if (req.url === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
-    res.writeHead(200);
-    res.end(JSON.stringify({ status: 'ok', version: VERSION, service: 'local-model-suitability-mcp', paid_keys_issued: apiKeys.size, checked_at: nowISO() }));
+    res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', version: VERSION, service: 'local-model-suitability-mcp', paid_keys_issued: apiKeys.size }));
     return;
   }
 
+  // Deps
   if (req.url === '/deps' && req.method === 'GET') {
-    const anthropicCheck = await depCheck('api.anthropic.com', '/v1/models', {
-      'x-api-key': process.env.ANTHROPIC_API_KEY || '',
-      'anthropic-version': '2023-06-01',
-    });
-    res.writeHead(200);
-    res.end(JSON.stringify({
-      server: 'local-model-suitability-mcp',
-      version: VERSION,
-      checked_at: nowISO(),
-      dependencies: { anthropic: anthropicCheck },
-    }));
+    let anthropicOk = false;
+    try {
+      const r = await fetch('https://api.anthropic.com', { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+      anthropicOk = r.status < 500;
+    } catch(e) { anthropicOk = false; }
+    res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ server: 'local-model-suitability-mcp', checked_at: nowISO(), dependencies: { anthropic: { ok: anthropicOk, note: 'claude-sonnet-4-6 — check every 6 months at console.anthropic.com' } } }));
     return;
   }
 
+  // Stats
   if (req.url === '/stats' && req.method === 'GET') {
-    const statsKey = req.headers['x-stats-key'];
-    if (statsKey !== process.env.STATS_KEY) {
-      res.writeHead(401);
+    if (req.headers['x-stats-key'] !== process.env.STATS_KEY) {
+      res.writeHead(401, cors);
       res.end(JSON.stringify({ error: 'Unauthorised' }));
       return;
     }
-    // Compute summary fields the dashboard expects (matches Bizfile pattern)
     const ipMap = stats.free_tier_calls_by_ip || {};
     const free_tier_unique_ips = Object.keys(ipMap).length;
     const free_tier_total_calls = Object.values(ipMap).reduce((total, monthMap) => {
       return total + Object.values(monthMap).reduce((a, b) => a + b, 0);
     }, 0);
-    res.writeHead(200);
+    res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      ...stats,
       free_tier_unique_ips,
       free_tier_total_calls,
-      version: VERSION,
       paid_keys_issued: apiKeys.size,
-      checked_at: nowISO()
+      tool_usage: stats.tool_usage,
+      recent_calls: stats.recent_calls.slice(-20).reverse()
     }));
     return;
   }
 
+  // Server card (Smithery)
   if (req.url === '/.well-known/mcp/server-card.json') {
-    res.writeHead(200);
-    res.end(JSON.stringify({
-      name: 'local-model-suitability-mcp',
-      version: VERSION,
-      description: 'AI-powered evaluation of whether a local model is suitable for a specific task. Helps agents decide between local inference and cloud APIs based on cost, privacy, latency, and quality.',
-      tools: [TOOL_DEFINITION],
-      transport: 'stdio',
-      homepage: 'https://kordagencies.com',
-      author: 'ojas1',
-    }));
+    res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ name: 'local-model-suitability-mcp', version: VERSION, description: 'Check whether a task can run locally instead of cloud — save money on every call that doesn\'t need cloud inference.', tools: [TOOL_DEFINITION], transport: 'stdio', homepage: 'https://kordagencies.com', author: 'ojas1' }));
     return;
   }
 
+  // Stripe webhook
   if (req.url === '/webhook/stripe' && req.method === 'POST') {
-    let body = ''; req.on('data', c => body += c);
+    let body = '';
+    req.on('data', c => body += c);
     req.on('end', async () => {
       const sig = req.headers['stripe-signature'] || '';
       const result = await handleStripeWebhook(body, sig);
       const status = result.status || 200;
       delete result.status;
-      res.writeHead(status);
+      res.writeHead(status, { ...cors, 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     });
     return;
   }
 
-  res.writeHead(404);
+  // MCP JSON-RPC (HTTP POST)
+  if (req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const request = JSON.parse(body);
+        let response;
+
+        if (request.method === 'initialize') {
+          response = {
+            jsonrpc: '2.0', id: request.id,
+            result: {
+              protocolVersion: '2024-11-05',
+              capabilities: { tools: {}, resources: {}, prompts: {} },
+              serverInfo: { name: 'local-model-suitability-mcp', version: VERSION }
+            }
+          };
+        } else if (request.method === 'notifications/initialized') {
+          res.writeHead(204, cors); res.end(); return;
+        } else if (request.method === 'tools/list') {
+          response = { jsonrpc: '2.0', id: request.id, result: { tools: [TOOL_DEFINITION] } };
+        } else if (request.method === 'resources/list') {
+          response = { jsonrpc: '2.0', id: request.id, result: { resources: [] } };
+        } else if (request.method === 'prompts/list') {
+          response = { jsonrpc: '2.0', id: request.id, result: { prompts: [] } };
+        } else if (request.method === 'tools/call' && request.params?.name === 'check_local_viability') {
+          const { task, quality_threshold, data_sensitivity } = request.params.arguments || {};
+
+          if (!task || task.trim().length === 0) {
+            response = {
+              jsonrpc: '2.0', id: request.id,
+              result: { content: [{ type: 'text', text: JSON.stringify({ error: 'task is required — describe what you are about to send to the cloud model', _disclaimer: LEGAL_DISCLAIMER }) }] }
+            };
+          } else {
+            const access = checkAccess(clientIp, apiKey);
+
+            if (!access.allowed) {
+              response = {
+                jsonrpc: '2.0', id: request.id,
+                result: { content: [{ type: 'text', text: JSON.stringify({ error: `Free tier limit of ${FREE_TIER_LIMIT} calls/month reached. You have seen it work — upgrade to Pro ($99/month) at kordagencies.com to continue saving on cloud costs.`, upgrade_url: 'https://kordagencies.com' }) }] }
+              };
+            } else {
+              if (access.tier === 'free') incrementFreeTier(clientIp);
+              logCall('check_local_viability', access.tier, clientIp);
+
+              try {
+                const result = await checkLocalViability(task, quality_threshold, data_sensitivity);
+
+                // Partial response for free tier
+                if (access.tier === 'free') {
+                  const freeResult = {
+                    verdict: result.verdict,
+                    confidence: result.confidence,
+                    reason: result.reason,
+                    analysis_type: result.analysis_type,
+                    checked_at: result.checked_at,
+                    _disclaimer: result._disclaimer,
+                    upgrade_url: 'https://kordagencies.com'
+                  };
+                  if (access.remaining <= 4) {
+                    freeResult._notice = `Warning: ${access.remaining} free calls remaining this month. Upgrade to Pro at kordagencies.com to keep saving on cloud costs.`;
+                  } else {
+                    freeResult._notice = `${FREE_TIER_LIMIT - access.remaining + 1}/${FREE_TIER_LIMIT} free calls used. Full response (cost savings, model recommendations) on Pro ($99/month) at kordagencies.com.`;
+                  }
+                  response = { jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: JSON.stringify(freeResult) }] } };
+                } else {
+                  response = { jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } };
+                }
+              } catch(e) {
+                console.error('[lms] AI error:', e.message);
+                response = {
+                  jsonrpc: '2.0', id: request.id,
+                  result: { content: [{ type: 'text', text: JSON.stringify({ error: 'AI analysis temporarily unavailable — this is not a problem with your task. Retry in a few minutes.', checked_at: nowISO(), _disclaimer: LEGAL_DISCLAIMER }) }] }
+                };
+              }
+            }
+          }
+        } else {
+          response = { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Method not found: ' + request.method } };
+        }
+
+        res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(response));
+      } catch(e) {
+        res.writeHead(400, { ...cors, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // 404
+  res.writeHead(404, cors);
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
-const HTTP_PORT = process.env.PORT || 3000;
-httpServer.listen(HTTP_PORT, () => {
-  process.stderr.write(`[local-model-suitability-mcp] HTTP on port ${HTTP_PORT}\n`);
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`[lms] Local Model Suitability MCP v${VERSION} running on port ${PORT}`);
+  console.log(`[lms] Tool: check_local_viability — cloud is expensive, local is the default`);
 });
-
-// ─── stdio MCP transport ──────────────────────────────────────────────────────
-
-process.stdin.setEncoding('utf8');
-let buffer = '';
-
-process.stdin.on('data', async (chunk) => {
-  buffer += chunk;
-  const lines = buffer.split('\n');
-  buffer = lines.pop();
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    let request;
-    try {
-      request = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-
-    const id = request.id;
-    try {
-      const result = await handleRequest(request);
-      const response = { jsonrpc: '2.0', id, result };
-      process.stdout.write(JSON.stringify(response) + '\n');
-    } catch (err) {
-      const error =
-        typeof err === 'object' && err.code
-          ? err
-          : { code: -32603, message: String(err?.message || err) };
-      process.stdout.write(
-        JSON.stringify({ jsonrpc: '2.0', id, error }) + '\n'
-      );
-    }
-  }
-});
-
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));

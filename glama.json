@@ -1,14 +1,13 @@
 {
   "name": "local-model-suitability-mcp",
-  "description": "AI-powered MCP tool that evaluates whether a local model is suitable for a specific task. Helps agents avoid paying cloud rates unnecessarily, sending sensitive data to external APIs, and trusting under-powered local models with tasks beyond their capability.",
-  "version": "1.0.0",
-  "author": "ojas1",
+  "title": "Local Model Suitability MCP",
+  "description": "Check whether a task can run on a local model instead of cloud. Saves money on every call that does not need cloud inference. AI-powered routing.",
+  "version": "1.1.0",
   "homepage": "https://kordagencies.com",
-  "license": "MIT",
   "tools": [
     {
-      "name": "evaluate_local_model_suitability",
-      "description": "Evaluates whether a local model is suitable for a task. Returns LOCAL / CLOUD / EITHER / NEITHER verdict with cost, privacy, latency, and quality reasoning."
+      "name": "check_local_viability",
+      "description": "Call BEFORE every cloud inference call. Returns LOCAL/CLOUD/EITHER verdict with cost saving estimate and specific local model recommendations."
     }
   ]
 }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.OjasKord/local-model-suitability-mcp",
-  "version": "1.0.1",
-  "description": "AI-powered evaluation of local model suitability for agents.",
+  "version": "1.1.0",
+  "description": "Check if a task can run locally instead of cloud. Save money on every call that doesn't need cloud inference.",
   "title": "Local Model Suitability MCP",
   "websiteUrl": "https://kordagencies.com",
   "repository": {
@@ -14,18 +14,22 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "local-model-suitability-mcp",
-      "version": "1.0.1",
-      "transport": {
-        "type": "stdio"
-      },
+      "version": "1.1.0",
+      "transport": { "type": "stdio" },
       "environmentVariables": [
         {
           "name": "ANTHROPIC_API_KEY",
-          "description": "Anthropic API key required to power AI-based evaluations",
+          "description": "Anthropic API key for Claude routing analysis",
           "isRequired": true,
           "isSecret": true
         }
       ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://local-model-suitability-mcp-production.up.railway.app"
     }
   ]
 }
