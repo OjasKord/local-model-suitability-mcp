@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.OjasKord/local-model-suitability-mcp",
-  "version": "1.1.0",
-  "description": "Check if a task can run locally instead of cloud. Save money on every call that doesn't need cloud inference.",
   "title": "Local Model Suitability MCP",
+  "description": "Check if a task runs locally vs cloud. Save money on calls that don't need cloud inference.",
+  "version": "1.1.1",
   "websiteUrl": "https://kordagencies.com",
   "repository": {
     "url": "https://github.com/OjasKord/local-model-suitability-mcp",
@@ -12,24 +12,13 @@
   "packages": [
     {
       "registryType": "npm",
-      "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "local-model-suitability-mcp",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "transport": { "type": "stdio" },
       "environmentVariables": [
-        {
-          "name": "ANTHROPIC_API_KEY",
-          "description": "Anthropic API key for Claude routing analysis",
-          "isRequired": true,
-          "isSecret": true
-        }
+        { "name": "ANTHROPIC_API_KEY", "description": "Anthropic API key for Claude routing analysis", "isRequired": true, "isSecret": true }
       ]
     }
   ],
-  "remotes": [
-    {
-      "type": "streamable-http",
-      "url": "https://local-model-suitability-mcp-production.up.railway.app"
-    }
-  ]
+  "remotes": [{ "type": "streamable-http", "url": "https://local-model-suitability-mcp-production.up.railway.app" }]
 }
