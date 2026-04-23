@@ -1,15 +1,13 @@
 {
   "name": "local-model-suitability-mcp",
-  "version": "1.1.0",
+  "mcpName": "io.github.OjasKord/local-model-suitability-mcp",
+  "version": "1.0.4",
   "description": "Check whether a task can run on a local model instead of cloud. Save money on every call that does not need cloud inference.",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
     "start": "node src/server.js"
   },
-  "license": "UNLICENSED",
-  "homepage": "https://kordagencies.com",
-  "mcpName": "io.github.OjasKord/local-model-suitability-mcp",
   "keywords": [
     "mcp",
     "agent",
@@ -20,8 +18,26 @@
     "privacy",
     "cost-optimisation",
     "llm-routing",
-    "inference-cost"
+    "inference-cost",
+    "local-inference",
+    "model-selection",
+    "ai-cost",
+    "lm-studio",
+    "llama"
   ],
+  "author": "Kord Agencies Pte Ltd <ojas@kordagencies.com>",
+  "license": "UNLICENSED",
+  "homepage": "https://kordagencies.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OjasKord/local-model-suitability-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/OjasKord/local-model-suitability-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0"
   }
