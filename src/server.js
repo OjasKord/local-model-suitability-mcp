@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.2';
 const PERSIST_FILE = '/tmp/lms_stats.json';
 const LEGAL_DISCLAIMER = 'AI-powered routing analysis. We do not log or store your task content. Results are for cost-optimisation guidance only. Provider maximum liability is limited to subscription fees paid in the preceding 3 months. Full terms: kordagencies.com/terms.html';
 
@@ -169,7 +169,7 @@ Respond ONLY with a JSON object — no markdown, no explanation outside the JSON
 }`;
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 500,
     system: systemPrompt,
     messages: [{ role: 'user', content: `Task to evaluate: ${task}` }]
@@ -358,7 +358,7 @@ const server = createServer(async (req, res) => {
             result: {
               protocolVersion: '2024-11-05',
               capabilities: { tools: {}, resources: {}, prompts: {} },
-              serverInfo: { name: 'local-model-suitability-mcp', version: VERSION }
+              serverInfo: { name: 'local-model-suitability-mcp', version: VERSION, description: 'Checks whether each task can run on a local model instead of cloud -- saves money on every call that does not need cloud inference. Free tier: 20 calls/month, no API key needed.' }
             }
           };
         } else if (request.method === 'notifications/initialized') {
@@ -375,7 +375,7 @@ const server = createServer(async (req, res) => {
           if (!task || task.trim().length === 0) {
             response = {
               jsonrpc: '2.0', id: request.id,
-              result: { content: [{ type: 'text', text: JSON.stringify({ error: 'task is required — describe what you are about to send to the cloud model', _disclaimer: LEGAL_DISCLAIMER }) }] }
+              result: { content: [{ type: 'text', text: JSON.stringify({ error: 'task is required — describe what you are about to send to the cloud model', agent_action: 'PROVIDE_REQUIRED_FIELD', _disclaimer: LEGAL_DISCLAIMER }) }] }
             };
           } else {
             const access = checkAccess(clientIp, apiKey);
@@ -383,7 +383,7 @@ const server = createServer(async (req, res) => {
             if (!access.allowed) {
               response = {
                 jsonrpc: '2.0', id: request.id,
-                result: { content: [{ type: 'text', text: JSON.stringify({ error: `Free tier limit of ${FREE_TIER_LIMIT} calls/month reached. You have seen it work — upgrade to Pro ($99/month) at kordagencies.com to continue saving on cloud costs.`, upgrade_url: 'https://kordagencies.com' }) }] }
+                result: { content: [{ type: 'text', text: JSON.stringify({ error: `Free tier limit of ${FREE_TIER_LIMIT} calls/month reached. You have seen it work -- upgrade to Pro ($99/month) at kordagencies.com to continue saving on cloud costs.`, agent_action: 'Inform user free tier quota is exhausted. Upgrade available at kordagencies.com', upgrade_url: 'https://kordagencies.com' }) }] }
               };
             } else {
               if (access.tier === 'free') incrementFreeTier(clientIp);
@@ -416,7 +416,7 @@ const server = createServer(async (req, res) => {
                 console.error('[lms] AI error:', e.message);
                 response = {
                   jsonrpc: '2.0', id: request.id,
-                  result: { content: [{ type: 'text', text: JSON.stringify({ error: 'AI analysis temporarily unavailable — this is not a problem with your task. Retry in a few minutes.', checked_at: nowISO(), _disclaimer: LEGAL_DISCLAIMER }) }] }
+                  result: { content: [{ type: 'text', text: JSON.stringify({ error: 'AI analysis temporarily unavailable -- this is not a problem with your task. Retry in a few minutes.', agent_action: 'RETRY_IN_2_MIN', checked_at: nowISO(), _disclaimer: LEGAL_DISCLAIMER }) }] }
                 };
               }
             }
@@ -439,6 +439,52 @@ const server = createServer(async (req, res) => {
   res.writeHead(404, cors);
   res.end(JSON.stringify({ error: 'Not found' }));
 });
+
+function setupStdio() {
+  if (process.stdin.isTTY) return;
+  let buf = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    buf += chunk;
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    lines.forEach(async line => {
+      if (!line.trim()) return;
+      let req;
+      try { req = JSON.parse(line); } catch(e) { return; }
+      let response;
+      if (req.method === 'initialize') {
+        response = { jsonrpc: '2.0', id: req.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'local-model-suitability-mcp', version: VERSION, description: 'Checks whether each task can run on a local model instead of cloud -- saves money on every call that does not need cloud inference. Free tier: 20 calls/month, no API key needed.' } } };
+      } else if (req.method === 'notifications/initialized') {
+        return;
+      } else if (req.method === 'tools/list') {
+        response = { jsonrpc: '2.0', id: req.id, result: { tools: [TOOL_DEFINITION] } };
+      } else if (req.method === 'resources/list') {
+        response = { jsonrpc: '2.0', id: req.id, result: { resources: [] } };
+      } else if (req.method === 'prompts/list') {
+        response = { jsonrpc: '2.0', id: req.id, result: { prompts: [] } };
+      } else if (req.method === 'tools/call' && req.params?.name === 'check_local_viability') {
+        const { task, quality_threshold, data_sensitivity } = req.params.arguments || {};
+        if (!task || task.trim().length === 0) {
+          response = { jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: JSON.stringify({ error: 'task is required', agent_action: 'PROVIDE_REQUIRED_FIELD', _disclaimer: LEGAL_DISCLAIMER }) }] } };
+        } else {
+          try {
+            const result = await checkLocalViability(task, quality_threshold, data_sensitivity);
+            response = { jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } };
+          } catch(e) {
+            response = { jsonrpc: '2.0', id: req.id, error: { code: -32603, message: e.message, agent_action: 'RETRY_IN_2_MIN' } };
+          }
+        }
+      } else {
+        response = { jsonrpc: '2.0', id: req.id, error: { code: -32601, message: 'Method not found: ' + req.method } };
+      }
+      process.stdout.write(JSON.stringify(response) + '\n');
+    });
+  });
+  process.stdin.resume();
+}
+
+setupStdio();
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
