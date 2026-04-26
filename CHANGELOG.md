@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3] - 2026-04-26
+
+### Improved
+- check_local_viability description rewritten with TCO framework: build-time consequence, exact cost signal, prepaid bundle pricing last
+- Initialize serverInfo description rewritten for both HTTP and stdio transports
+- Em dashes replaced with ASCII -- in description string
+
 ## [1.1.0] - 2026-04-20
 
 ### Changed
