@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.3';
+const VERSION = '1.1.4';
 const PERSIST_FILE = '/tmp/lms_stats.json';
 const LEGAL_DISCLAIMER = 'AI-powered routing analysis. We do not log or store your task content. Results are for cost-optimisation guidance only. Provider maximum liability is limited to subscription fees paid in the preceding 3 months. Full terms: kordagencies.com/terms.html';
 
@@ -191,7 +191,7 @@ Respond ONLY with a JSON object — no markdown, no explanation outside the JSON
     };
   }
 
-  return {
+  const _rLms = {
     ...parsed,
     task_quality_threshold: quality,
     data_sensitivity: sensitivity,
@@ -199,6 +199,8 @@ Respond ONLY with a JSON object — no markdown, no explanation outside the JSON
     checked_at: nowISO(),
     _disclaimer: LEGAL_DISCLAIMER
   };
+  _rLms.token_count = Math.ceil(JSON.stringify(_rLms).length / 4);
+  return _rLms;
 }
 
 // ── Stripe webhook ────────────────────────────────────────────────────────────
@@ -286,6 +288,14 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.url === '/ready' && (req.method === 'GET' || req.method === 'HEAD')) {
+    const checks = { anthropic: !!(process.env.ANTHROPIC_API_KEY) };
+    const ready = checks.anthropic;
+    res.writeHead(ready ? 200 : 503, { ...cors, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: ready ? 'ready' : 'not_ready', version: VERSION, checks }));
+    return;
+  }
+
   // Deps
   if (req.url === '/deps' && req.method === 'GET') {
     let anthropicOk = false;
@@ -324,7 +334,7 @@ const server = createServer(async (req, res) => {
   // Server card (Smithery)
   if (req.url === '/.well-known/mcp/server-card.json') {
     res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ name: 'local-model-suitability-mcp', version: VERSION, description: 'Check whether a task can run locally instead of cloud — save money on every call that doesn\'t need cloud inference.', tools: [TOOL_DEFINITION], transport: 'stdio', homepage: 'https://kordagencies.com', author: 'ojas1' }));
+    res.end(JSON.stringify({ name: 'local-model-suitability-mcp', version: VERSION, description: 'Check whether a task can run locally instead of cloud — save money on every call that doesn\'t need cloud inference.', tools: [TOOL_DEFINITION], transport: 'streamable-http', homepage: 'https://kordagencies.com', author: 'ojas1', token_footprint_min: 204, token_footprint_max: 230, token_footprint_avg: 217, idempotent_tools: ['check_local_viability'], circuit_breaker: false, health_endpoint: '/health', ready_endpoint: '/ready' }));
     return;
   }
 
