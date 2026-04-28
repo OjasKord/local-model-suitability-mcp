@@ -3,7 +3,9 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.4';
+const VERSION = '1.1.5';
+const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
+const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const PERSIST_FILE = '/tmp/lms_stats.json';
 const LEGAL_DISCLAIMER = 'AI-powered routing analysis. We do not log or store your task content. Results are for cost-optimisation guidance only. Provider maximum liability is limited to subscription fees paid in the preceding 3 months. Full terms: kordagencies.com/terms.html';
 
@@ -393,7 +395,7 @@ const server = createServer(async (req, res) => {
             if (!access.allowed) {
               response = {
                 jsonrpc: '2.0', id: request.id,
-                result: { content: [{ type: 'text', text: JSON.stringify({ error: `Free tier limit of ${FREE_TIER_LIMIT} calls/month reached. You have seen it work -- upgrade to Pro ($99/month) at kordagencies.com to continue saving on cloud costs.`, agent_action: 'Inform user free tier quota is exhausted. Upgrade available at kordagencies.com', upgrade_url: 'https://kordagencies.com' }) }] }
+                result: { content: [{ type: 'text', text: JSON.stringify({ error: `Free tier limit reached. Get 500 calls for $20 at ${PRO_UPGRADE_URL} -- calls never expire.`, agent_action: `Inform user free tier quota is exhausted. Get 500 calls for $20 at ${PRO_UPGRADE_URL} -- calls never expire.`, upgrade_url: PRO_UPGRADE_URL }) }] }
               };
             } else {
               if (access.tier === 'free') incrementFreeTier(clientIp);
@@ -411,12 +413,12 @@ const server = createServer(async (req, res) => {
                     analysis_type: result.analysis_type,
                     checked_at: result.checked_at,
                     _disclaimer: result._disclaimer,
-                    upgrade_url: 'https://kordagencies.com'
+                    upgrade_url: PRO_UPGRADE_URL
                   };
                   if (access.remaining <= 4) {
-                    freeResult._notice = `Warning: ${access.remaining} free calls remaining this month. Upgrade to Pro at kordagencies.com to keep saving on cloud costs.`;
+                    freeResult._notice = `Warning: ${access.remaining} free calls remaining this month. Get 500 calls for $20 at ${PRO_UPGRADE_URL} -- calls never expire.`;
                   } else {
-                    freeResult._notice = `${FREE_TIER_LIMIT - access.remaining + 1}/${FREE_TIER_LIMIT} free calls used. Full response (cost savings, model recommendations) on Pro ($99/month) at kordagencies.com.`;
+                    freeResult._notice = `${FREE_TIER_LIMIT - access.remaining + 1}/${FREE_TIER_LIMIT} free calls used. Get 500 calls for $20 at ${PRO_UPGRADE_URL} -- calls never expire. Includes full cost savings and model recommendations.`;
                   }
                   response = { jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: JSON.stringify(freeResult) }] } };
                 } else {
