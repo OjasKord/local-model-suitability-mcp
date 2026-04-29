@@ -1,3 +1,5 @@
+[![smithery badge](https://smithery.ai/badge/OjasKord/local-model-suitability-mcp)](https://smithery.ai/servers/OjasKord/local-model-suitability-mcp)
+
 # Local Model Suitability MCP
 
 **Cloud inference is expensive. Everything that can run locally should.**
