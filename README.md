@@ -41,11 +41,11 @@ Call this BEFORE every cloud inference call. If verdict is `LOCAL`, skip the clo
 
 ## Pricing
 
-| Plan | Price | Calls/month |
+| Plan | Calls | Price |
 |---|---|---|
-| Free | $0 | 20 |
-| Pro | $99/month | 2,000 |
-| Enterprise | $299/month | Unlimited |
+| Free | 20/month | $0 |
+| Starter | 500-call bundle | $20 |
+| Pro | 2,000-call bundle | $70 |
 
 [Subscribe at kordagencies.com](https://kordagencies.com)
 
