@@ -68,6 +68,49 @@ Call this BEFORE every cloud inference call. If verdict is `LOCAL`, skip the clo
 
 Free tier requires no API key — tracked by IP.
 
+## Harness Integration
+
+### Claude Code / Claude Desktop (.mcp.json)
+```json
+{
+  "mcpServers": {
+    "local-model-suitability": {
+      "type": "http",
+      "url": "https://local-model-suitability-mcp-production.up.railway.app"
+    }
+  }
+}
+```
+
+### LangChain (Python)
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+client = MultiServerMCPClient({
+    "local-model-suitability": {
+        "url": "https://local-model-suitability-mcp-production.up.railway.app",
+        "transport": "http"
+    }
+})
+tools = await client.get_tools()
+```
+
+### OpenAI Agents SDK (Python)
+```python
+from agents import Agent, HostedMCPTool
+agent = Agent(
+    name="Assistant",
+    tools=[HostedMCPTool(tool_config={
+        "type": "mcp",
+        "server_label": "local-model-suitability",
+        "server_url": "https://local-model-suitability-mcp-production.up.railway.app",
+        "require_approval": "never"
+    })]
+)
+```
+
+### LangGraph
+Same as LangChain above — langchain-mcp-adapters works with LangGraph natively.
+
 ## Legal
 
 Results are for cost-optimisation guidance only and do not constitute technical advice. Full terms: [kordagencies.com/terms.html](https://kordagencies.com/terms.html)
