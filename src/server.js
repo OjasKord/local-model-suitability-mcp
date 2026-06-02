@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.6';
+const VERSION = '1.1.8';
 const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
 const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const PERSIST_FILE = '/tmp/lms_stats.json';
@@ -23,19 +23,23 @@ let stats = {
   recent_calls: [],
   free_tier_calls_by_ip: {}
 };
+const trialExtensions = new Map();
+const TRIAL_EXTENSION_CALLS = 10;
 
 function loadStats() {
   try {
     const data = JSON.parse(readFileSync(PERSIST_FILE, 'utf8'));
-    stats = data;
-    console.log('[lms] stats loaded from disk');
+    const { trialExtensions: te, ...rest } = data;
+    stats = rest;
+    if (te) te.forEach(([k, v]) => trialExtensions.set(k, v));
+    console.log('[lms] stats loaded from disk, ' + trialExtensions.size + ' trial extensions');
   } catch(e) {
     console.log('[lms] no stats file found — fresh start');
   }
 }
 
 function saveStats() {
-  try { writeFileSync(PERSIST_FILE, JSON.stringify(stats)); } catch(e) {}
+  try { writeFileSync(PERSIST_FILE, JSON.stringify({ ...stats, trialExtensions: [...trialExtensions.entries()] })); } catch(e) {}
 }
 
 loadStats();
@@ -66,7 +70,7 @@ function checkAccess(ip, apiKey) {
   const count = getFreeTierCount(ip);
   const remaining = FREE_TIER_LIMIT - count;
   if (remaining <= 0) {
-    return { allowed: false, tier: 'free', remaining: 0 };
+    return { allowed: false, tier: 'free', remaining: 0, reason: 'Free tier limit of ' + FREE_TIER_LIMIT + ' calls/month reached. Option 1: POST /trial-extension with {"name":"...","email":"...","use_case":"..."} for 10 extra free calls. Option 2: Upgrade at ' + PRO_UPGRADE_URL + ' (500 calls, never expire).', trial_extension: { endpoint: '/trial-extension', method: 'POST', body: { name: 'string', email: 'string', use_case: 'string' } }, upgrade_url: PRO_UPGRADE_URL };
   }
   return { allowed: true, tier: 'free', remaining, count };
 }
@@ -329,7 +333,8 @@ const server = createServer(async (req, res) => {
       free_tier_total_calls,
       paid_keys_issued: apiKeys.size,
       tool_usage: stats.tool_usage,
-      recent_calls: stats.recent_calls.slice(-20).reverse()
+      recent_calls: stats.recent_calls.slice(-20).reverse(),
+      trial_extensions_granted: trialExtensions.size
     }));
     return;
   }
@@ -338,6 +343,40 @@ const server = createServer(async (req, res) => {
   if (req.url === '/.well-known/mcp/server-card.json') {
     res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ name: 'local-model-suitability-mcp', version: VERSION, description: 'Check whether a task can run locally instead of cloud — save money on every call that doesn\'t need cloud inference.', tools: [TOOL_DEFINITION], transport: 'streamable-http', homepage: 'https://kordagencies.com', author: 'ojas1', token_footprint_min: 204, token_footprint_max: 230, token_footprint_avg: 217, idempotent_tools: ['check_local_viability'], circuit_breaker: false, health_endpoint: '/health', ready_endpoint: '/ready' }));
+    return;
+  }
+
+  // Trial extension
+  if (req.url === '/trial-extension' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const { name, email, use_case } = JSON.parse(body);
+        if (!name || !email) { res.writeHead(400, { ...cors, 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'name and email are required', agent_action: 'PROVIDE_REQUIRED_FIELDS' })); return; }
+        const emailKey = 'trial:' + email.toLowerCase().trim();
+        if (trialExtensions.has(emailKey)) { res.writeHead(409, { ...cors, 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Trial extension already granted for this email.', upgrade_url: PRO_UPGRADE_URL, agent_action: 'INFORM_USER_TRIAL_ALREADY_USED' })); return; }
+        const month = MONTH_KEY();
+        if (!stats.free_tier_calls_by_ip[clientIp]) stats.free_tier_calls_by_ip[clientIp] = {};
+        const current = stats.free_tier_calls_by_ip[clientIp][month] || 0;
+        stats.free_tier_calls_by_ip[clientIp][month] = Math.max(0, current - TRIAL_EXTENSION_CALLS);
+        trialExtensions.set(emailKey, { name, email, use_case: use_case || '', ip: clientIp, granted_at: nowISO() });
+        saveStats();
+        const sendTrialEmail = async (to, subject, html) => {
+          await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: 'Local Model Suitability MCP <ojas@kordagencies.com>', to: [to], subject, html })
+          }).catch(e => console.error('[lms] email error:', e.message));
+        };
+        await sendTrialEmail('ojas@kordagencies.com', 'Local Model Suitability MCP -- Trial Extension: ' + name,
+          '<p><b>Name:</b> ' + name + '<br><b>Email:</b> ' + email + '<br><b>Use case:</b> ' + (use_case || 'Not provided') + '<br><b>IP:</b> ' + clientIp + '<br><b>Calls granted:</b> ' + TRIAL_EXTENSION_CALLS + '</p>');
+        await sendTrialEmail(email, TRIAL_EXTENSION_CALLS + ' extra free calls added -- Local Model Suitability MCP',
+          '<p>Hi ' + name + ',</p><p>Your ' + TRIAL_EXTENSION_CALLS + ' extra free calls have been added. You can keep using Local Model Suitability MCP right now -- no action needed.</p><p>When you need more, Pro is $20/month for 500 calls (never expire): ' + PRO_UPGRADE_URL + '</p><p>Ojas<br>kordagencies.com</p>');
+        res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ granted: true, additional_calls: TRIAL_EXTENSION_CALLS, message: TRIAL_EXTENSION_CALLS + ' extra free calls added. Check your email for confirmation.', upgrade_url: PRO_UPGRADE_URL }));
+      } catch(e) { res.writeHead(400, { ...cors, 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: e.message, agent_action: 'RETRY_IN_2_MIN' })); }
+    });
     return;
   }
 
