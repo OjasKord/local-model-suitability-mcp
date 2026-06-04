@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.1.9] - 2026-06-04
+
+### Added
+- Upstash Redis persistence: free tier usage, API keys, session logs survive redeploys
+- `loadFreeTierFromRedis()` / `saveFreeTierToRedis()` with Math.max merge (adapted for stats object structure)
+- `saveKeyToRedis()` / `loadApiKeysFromRedis()` with prefix `lms`
+- `appendSessionLog(ip, tool)` with 24h TTL per IP per day
+- `/session-log` endpoint (requires x-stats-key)
+- `free_tier_breakdown` per-IP object on `/stats` response for current month
+- `getEffectiveLimit(ip)` helper — returns base + trial extension if applicable
+
+### Changed
+- `check_local_viability` tool description rewritten for orchestral agent runtime selection: state-based trigger, verdict consequences, DO NOT USE condition
+- `VERSION` bumped to `1.1.9`
+
 ## [1.1.8] - 2026-06-02
 
 ### Fixed
