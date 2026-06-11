@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.1.13] - 2026-06-11
+- feat: per-tool kill switch + per-minute rate limiting on AI tools
+
 ## [1.1.12] - 2026-06-08
 - fix: BEFORE trigger language, consequence-first limit error
 

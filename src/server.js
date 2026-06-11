@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.12';
+const VERSION = '1.1.13';
 const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
 const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const PERSIST_FILE = '/tmp/lms_stats.json';
@@ -25,6 +25,22 @@ let stats = {
 };
 const trialExtensions = new Map();
 const TRIAL_EXTENSION_CALLS = 10;
+
+const perMinuteUsage = new Map();
+
+function checkPerMinuteLimit(ip, toolName, limit) {
+  const minuteKey = ip + ':' + toolName + ':' + new Date().toISOString().slice(0, 16);
+  const count = perMinuteUsage.get(minuteKey) || 0;
+  if (count >= limit) return false;
+  perMinuteUsage.set(minuteKey, count + 1);
+  if (perMinuteUsage.size > 10000) {
+    const currentMinute = new Date().toISOString().slice(0, 16);
+    for (const [key] of perMinuteUsage) {
+      if (!key.includes(currentMinute)) perMinuteUsage.delete(key);
+    }
+  }
+  return true;
+}
 
 const REDIS_PREFIX = 'lms';
 const FREE_TIER_REDIS_KEY = 'lms:free_tier_usage';
@@ -619,6 +635,11 @@ const server = createServer(async (req, res) => {
         } else if (request.method === 'prompts/list') {
           response = { jsonrpc: '2.0', id: request.id, result: { prompts: [] } };
         } else if (request.method === 'tools/call' && request.params?.name === 'check_local_viability') {
+          if (process.env['TOOL_DISABLED_CHECK_LOCAL_VIABILITY'] === 'true') {
+            response = { jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: JSON.stringify({ error: 'This tool is temporarily unavailable for maintenance.', agent_action: 'RETRY_IN_30_MIN', retryable: true, retry_after_ms: 1800000 }) }] } };
+          } else if (!checkPerMinuteLimit(clientIp, 'check_local_viability', 5)) {
+            response = { jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: JSON.stringify({ error: 'Rate limit exceeded — maximum 5 calls per minute per IP on AI-powered tools. Your workflow is calling this tool too rapidly.', agent_action: 'RETRY_IN_60_SEC', retryable: true, retry_after_ms: 60000, limit: 5, window: '1 minute' }) }] } };
+          } else {
           const { task, quality_threshold, data_sensitivity } = request.params.arguments || {};
 
           if (!task || task.trim().length === 0) {
@@ -672,6 +693,7 @@ const server = createServer(async (req, res) => {
               }
             }
           }
+          }
         } else {
           response = { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Method not found: ' + request.method } };
         }
@@ -715,6 +737,9 @@ function setupStdio() {
       } else if (req.method === 'prompts/list') {
         response = { jsonrpc: '2.0', id: req.id, result: { prompts: [] } };
       } else if (req.method === 'tools/call' && req.params?.name === 'check_local_viability') {
+        if (process.env['TOOL_DISABLED_CHECK_LOCAL_VIABILITY'] === 'true') {
+          response = { jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: JSON.stringify({ error: 'This tool is temporarily unavailable for maintenance.', agent_action: 'RETRY_IN_30_MIN', retryable: true, retry_after_ms: 1800000 }) }] } };
+        } else {
         const { task, quality_threshold, data_sensitivity } = req.params.arguments || {};
         if (!task || task.trim().length === 0) {
           response = { jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: JSON.stringify({ error: 'task is required', likely_cause: 'required field missing or malformed', retryable: false, retry_after_ms: null, fallback_tool: null, agent_action: 'PROVIDE_REQUIRED_FIELD', category: 'invalid_input', trace_id: nowISO(), _disclaimer: LEGAL_DISCLAIMER }) }] } };
@@ -725,6 +750,7 @@ function setupStdio() {
           } catch(e) {
             response = { jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: JSON.stringify({ error: e.message, likely_cause: 'AI routing analysis failed — transient Anthropic API issue', retryable: true, retry_after_ms: 120000, fallback_tool: null, agent_action: 'RETRY_IN_2_MIN', category: 'ai_failure', trace_id: nowISO(), _disclaimer: LEGAL_DISCLAIMER }) }] } };
           }
+        }
         }
       } else {
         response = { jsonrpc: '2.0', id: req.id, error: { code: -32601, message: 'Method not found: ' + req.method } };
