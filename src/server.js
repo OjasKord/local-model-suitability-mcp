@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.14';
+const VERSION = '1.1.15';
 const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
 const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const PERSIST_FILE = '/tmp/lms_stats.json';
@@ -503,7 +503,7 @@ const server = createServer(async (req, res) => {
   // Server card (Smithery)
   if (req.url === '/.well-known/mcp/server-card.json') {
     res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ name: 'local-model-suitability-mcp', version: VERSION, description: 'Check whether a task can run locally instead of cloud — save money on every call that doesn\'t need cloud inference.', tools: [TOOL_DEFINITION], transport: 'streamable-http', homepage: 'https://kordagencies.com', author: 'ojas1', token_footprint_min: 204, token_footprint_max: 230, token_footprint_avg: 217, idempotent_tools: ['check_local_viability'], circuit_breaker: false, health_endpoint: '/health', ready_endpoint: '/ready' }));
+    res.end(JSON.stringify({ serverInfo: { name: 'local-model-suitability-mcp', version: VERSION }, tools: [{ name: TOOL_DEFINITION.name, description: TOOL_DEFINITION.description.slice(0, 150) }], resources: [], prompts: [] }));
     return;
   }
 
