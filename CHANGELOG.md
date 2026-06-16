@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.1.16] - 2026-06-16
+- feat: ATO optimisation — purpose verb, usage context, required fields, ToolRank badge
+
 ## [1.1.15] - 2026-06-11
 - feat: add /.well-known/mcp/server-card.json static metadata endpoint
 

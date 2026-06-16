@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.15';
+const VERSION = '1.1.16';
 const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
 const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const PERSIST_FILE = '/tmp/lms_stats.json';
@@ -227,7 +227,7 @@ const CLOUD_PRICING = {
 const TOOL_DEFINITION = {
   name: 'check_local_viability',
   idempotent: true,
-  description: 'Call this BEFORE your agent routes any task to a cloud model — at the moment a task is ready to be sent and the model has not yet been selected. Returns LOCAL/CLOUD/EITHER verdict with recommended model. If verdict is LOCAL, skip the cloud call entirely — saves cost on every routable inference call. Pass data_sensitivity=CONFIDENTIAL to force LOCAL verdict for tasks that must not leave the machine. Do not route to cloud without checking local viability first.',
+  description: 'Checks whether a task can be handled by a local model instead of a cloud API. Call this BEFORE your agent routes any task to a cloud model — at the moment a task is ready to be sent and the model has not yet been selected. Use this when your agent is about to make a cloud inference call and wants to determine whether a local model could handle it at lower cost. Returns LOCAL/CLOUD/EITHER verdict with recommended model. If verdict is LOCAL, skip the cloud call entirely — saves cost on every routable inference call. Pass data_sensitivity=CONFIDENTIAL to force LOCAL verdict for tasks that must not leave the machine. Do not route to cloud without checking local viability first.',
   inputSchema: {
     type: 'object',
     properties: {

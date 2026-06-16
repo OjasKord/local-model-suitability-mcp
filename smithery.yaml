@@ -1,5 +1,5 @@
 name: Local Model Suitability MCP
-description: "Before routing any task to a cloud model, call check_local_viability. Returns LOCAL/CLOUD/EITHER verdict with recommended model - saves inference cost on every routable call."
+description: "Before routing any task to a cloud model, call check_local_viability. Returns LOCAL/CLOUD/EITHER verdict with recommended model - saves inference cost on every routable call. 2 focused tools. Compact schema. Minimal agent context overhead."
 categories:
   - Dev Tools
   - AI

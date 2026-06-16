@@ -2,6 +2,8 @@
 
 # Local Model Suitability MCP
 
+[![ToolRank](https://toolrank.dev/badge/dominant.svg)](https://toolrank.dev/ranking)
+
 **Cloud inference is expensive. Everything that can run locally should.**
 
 This MCP server tells your agent — before every cloud API call — whether the task can be handled by a local model instead. Route to Ollama, LM Studio, or llama.cpp when you can. Only pay for cloud when you must.
