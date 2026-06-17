@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.17';
+const VERSION = '1.1.18';
 const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
 const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const ALLOWED_PAYMENT_LINK_IDS = ['plink_1TQzCBD6WvRe6sn3H1q5t2LF', 'plink_1TQzDSD6WvRe6sn3UM2G1EgX'];
@@ -406,7 +406,8 @@ async function handleStripeWebhook(body, sig) {
 <p>Questions? Reply to this email.</p>
 <p style="font-size:12px;color:#666;">Results are for cost-optimisation guidance only. Provider maximum liability limited to subscription fees paid in preceding 3 months. Full terms: <a href="https://kordagencies.com/terms.html">kordagencies.com/terms.html</a></p>`
         })
-      }).catch(e => console.error('[lms] Resend error:', e.message));
+      }).then(r => { if (!r.ok) r.text().then(t => console.error('[lms] Resend email failed: HTTP ' + r.status + ' ' + t)); })
+        .catch(e => console.error('[lms] Resend network error:', e.message));
     }
   }
 

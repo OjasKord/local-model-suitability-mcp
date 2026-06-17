@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.1.18] - 2026-06-17
+- fix: Resend fetch now logs HTTP error responses; was silently swallowing non-2xx failures
+
 ## [1.1.17] - 2026-06-17
 - fix: Stripe webhook now validates payment_link ID — ignores events not belonging to this server
 
