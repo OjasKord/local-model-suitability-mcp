@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.1.17] - 2026-06-17
+- fix: Stripe webhook now validates payment_link ID — ignores events not belonging to this server
+
 ## [1.1.16] - 2026-06-16
 - feat: ATO optimisation — purpose verb, usage context, required fields, ToolRank badge
 

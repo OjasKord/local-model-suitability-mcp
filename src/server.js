@@ -3,9 +3,10 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.16';
+const VERSION = '1.1.17';
 const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
 const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
+const ALLOWED_PAYMENT_LINK_IDS = ['plink_1TQzCBD6WvRe6sn3H1q5t2LF', 'plink_1TQzDSD6WvRe6sn3UM2G1EgX'];
 const PERSIST_FILE = '/tmp/lms_stats.json';
 const LEGAL_DISCLAIMER = 'AI-powered routing analysis. We do not log or store your task content. Results are for cost-optimisation guidance only. Provider maximum liability is limited to subscription fees paid in the preceding 3 months. Full terms: kordagencies.com/terms.html';
 
@@ -363,6 +364,11 @@ async function handleStripeWebhook(body, sig) {
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
+    const paymentLinkId = session.payment_link;
+    if (paymentLinkId && !ALLOWED_PAYMENT_LINK_IDS.includes(paymentLinkId)) {
+      console.log('[lms] Webhook received but payment link ' + paymentLinkId + ' not for this server — ignoring.');
+      return { received: true, ignored: true };
+    }
     const email = session.customer_details?.email;
     const plan = session.metadata?.plan || 'pro';
     const apiKey = 'lms_' + createHmac('sha256', secret).update(email + Date.now()).digest('hex').slice(0, 32);
