@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.18';
+const VERSION = '1.1.19';
 const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
 const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const ALLOWED_PAYMENT_LINK_IDS = ['plink_1TQzCBD6WvRe6sn3H1q5t2LF', 'plink_1TQzDSD6WvRe6sn3UM2G1EgX'];
@@ -159,6 +159,26 @@ async function redisKeys(pattern) {
     if (data.error) console.error('[Redis] redisKeys error:', data.error, 'pattern:', pattern);
     return data.result || [];
   } catch(e) { return []; }
+}
+
+async function redisDelete(key) {
+  try {
+    const res = await fetch(
+      `${UPSTASH_URL}/del/${encodeURIComponent(key)}`,
+      { method: 'POST', headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
+    );
+    const data = await res.json();
+    if (data.error) console.error('[Redis] redisDelete error:', data.error, 'key:', key);
+  } catch(e) { console.error('[Redis] redisDelete failed:', e); }
+}
+
+async function findCheckoutSessionEmail(paymentIntentId) {
+  const res = await fetch(
+    `https://api.stripe.com/v1/checkout/sessions?payment_intent=${encodeURIComponent(paymentIntentId)}`,
+    { headers: { Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}` } }
+  );
+  const data = await res.json();
+  return data.data?.[0]?.customer_details?.email || data.data?.[0]?.customer_email || null;
 }
 
 async function appendSessionLog(ip, tool) {
@@ -408,6 +428,41 @@ async function handleStripeWebhook(body, sig) {
         })
       }).then(r => { if (!r.ok) r.text().then(t => console.error('[lms] Resend email failed: HTTP ' + r.status + ' ' + t)); })
         .catch(e => console.error('[lms] Resend network error:', e.message));
+    }
+  }
+
+  if (event.type === 'charge.refunded') {
+    if (!process.env.STRIPE_SECRET_KEY) {
+      console.error('[lms] STRIPE_SECRET_KEY not set — cannot revoke key on refund');
+      return { received: true, ignored: true, status: 200 };
+    }
+    const paymentIntentId = event.data.object.payment_intent;
+    if (!paymentIntentId) {
+      console.log('[lms] charge.refunded missing payment_intent — ignoring.');
+      return { received: true, ignored: true, status: 200 };
+    }
+    try {
+      const email = await findCheckoutSessionEmail(paymentIntentId);
+      if (!email) {
+        console.log('[lms] No checkout session/email found for refunded payment_intent ' + paymentIntentId);
+        return { received: true, ignored: true, status: 200 };
+      }
+      let revokedKey = null;
+      for (const [key, record] of apiKeys.entries()) {
+        if (record.email === email) { revokedKey = key; break; }
+      }
+      if (!revokedKey) {
+        console.log('[lms] No API key found for ' + email + ' — refund received, nothing to revoke');
+        return { received: true, ignored: true, status: 200 };
+      }
+      apiKeys.delete(revokedKey);
+      await redisDelete(`${REDIS_PREFIX}:key:${revokedKey}`);
+      saveStats();
+      console.log('[Webhook] API key revoked for ' + email + ' — refund received');
+      return { received: true, revoked: true, status: 200 };
+    } catch(e) {
+      console.error('[lms] charge.refunded handling error:', e.message);
+      return { received: true, ignored: true, status: 200 };
     }
   }
 

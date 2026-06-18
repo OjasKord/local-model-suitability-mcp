@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.1.19] - 2026-06-18
+- feat: revoke API key on Stripe refund
+
 ## [1.1.18] - 2026-06-17
 - fix: Resend fetch now logs HTTP error responses; was silently swallowing non-2xx failures
 
