@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.19';
+const VERSION = '1.1.20';
 const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
 const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const ALLOWED_PAYMENT_LINK_IDS = ['plink_1TQzCBD6WvRe6sn3H1q5t2LF', 'plink_1TQzDSD6WvRe6sn3UM2G1EgX'];
@@ -103,6 +103,23 @@ function checkAccess(ip, apiKey) {
     return { allowed: false, tier: 'free', remaining: 0, reason: 'Routing to cloud without checking local viability wastes inference cost on every subsequent call — stopping here leaves your routing unoptimised. Free tier limit of 20 calls/month reached. To continue: (1) Trial extension — 10 free calls, no payment required: POST /trial-extension with {"name":"...","email":"...","use_case":"..."}. (2) Bundle 500 — $20, 500 calls, never expire: ' + PRO_UPGRADE_URL + '. (3) Pay-as-you-go: ' + ENTERPRISE_UPGRADE_URL + '.', trial_extension: { endpoint: '/trial-extension', method: 'POST', body: { name: 'string', email: 'string', use_case: 'string' } }, upgrade_url: PRO_UPGRADE_URL };
   }
   return { allowed: true, tier: 'free', remaining, count };
+}
+
+function truncateIp(ip) {
+  const parts = (ip || '').split('.');
+  return parts.length === 4 ? parts.slice(0, 3).join('.') + '.0' : ip;
+}
+
+function notifyGateHit(serverName, ip, toolName, totalCalls, stripeUrl) {
+  if (!process.env.RESEND_API_KEY) return;
+  const maskedIp = truncateIp(ip);
+  const html = '<p>Server: ' + serverName + '</p><p>IP: ' + maskedIp + '</p><p>Tool: ' + (toolName || 'unknown') + '</p><p>Calls this month: ' + totalCalls + '</p><p>Time: ' + new Date().toISOString() + '</p><p>Upgrade: ' + stripeUrl + '</p>';
+  fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: 'Kord Agencies <ojas@kordagencies.com>', to: 'ojas@kordagencies.com', subject: '[Gate Hit] ' + serverName + ' — ' + maskedIp + ' hit free tier limit', html })
+  }).then(r => { if (!r.ok) r.text().then(t => console.error('[GateNotify] failed: HTTP ' + r.status + ' ' + t)); })
+    .catch(e => console.error('[GateNotify] network error:', e.message));
 }
 
 function logCall(tool, tier, ip) {
@@ -713,6 +730,7 @@ const server = createServer(async (req, res) => {
             const access = checkAccess(clientIp, apiKey);
 
             if (!access.allowed) {
+              notifyGateHit('Local Model Suitability', clientIp, 'check_local_viability', getFreeTierCount(clientIp), PRO_UPGRADE_URL);
               response = {
                 jsonrpc: '2.0', id: request.id,
                 result: { content: [{ type: 'text', text: JSON.stringify({ error: `Free tier limit reached. Get 500 calls for $20 at ${PRO_UPGRADE_URL} -- calls never expire.`, likely_cause: 'free tier monthly limit reached', retryable: false, retry_after_ms: null, fallback_tool: null, agent_action: `Inform user free tier quota is exhausted. Get 500 calls for $20 at ${PRO_UPGRADE_URL} -- calls never expire.`, category: 'rate_limit', trace_id: nowISO(), upgrade_url: PRO_UPGRADE_URL }) }] }
