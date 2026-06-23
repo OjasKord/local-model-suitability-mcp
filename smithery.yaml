@@ -1,4 +1,5 @@
 name: Local Model Suitability MCP
+agentRole: "AI Model Routing Specialist — equip before routing a task to a cloud model to check whether a local model can handle it instead"
 description: "Before routing any task to a cloud model, call check_local_viability. Returns LOCAL/CLOUD/EITHER verdict with recommended model - saves inference cost on every routable call. 2 focused tools. Compact schema. Minimal agent context overhead."
 categories:
   - Dev Tools

@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.20';
+const VERSION = '1.1.21';
 const PRO_UPGRADE_URL = 'https://buy.stripe.com/cNibJ08wd7zf6NS0h2ebu0p';
 const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const ALLOWED_PAYMENT_LINK_IDS = ['plink_1TQzCBD6WvRe6sn3H1q5t2LF', 'plink_1TQzDSD6WvRe6sn3UM2G1EgX'];
@@ -695,6 +695,7 @@ const server = createServer(async (req, res) => {
       try {
         const request = JSON.parse(body);
         let response;
+        let statusCode = 200;
 
         if (request.method === 'initialize') {
           response = {
@@ -730,6 +731,7 @@ const server = createServer(async (req, res) => {
             const access = checkAccess(clientIp, apiKey);
 
             if (!access.allowed) {
+              statusCode = 402;
               notifyGateHit('Local Model Suitability', clientIp, 'check_local_viability', getFreeTierCount(clientIp), PRO_UPGRADE_URL);
               response = {
                 jsonrpc: '2.0', id: request.id,
@@ -778,7 +780,7 @@ const server = createServer(async (req, res) => {
           response = { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Method not found: ' + request.method } };
         }
 
-        res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+        res.writeHead(statusCode, { ...cors, 'Content-Type': 'application/json' });
         res.end(JSON.stringify(response));
       } catch(e) {
         res.writeHead(400, { ...cors, 'Content-Type': 'application/json' });
