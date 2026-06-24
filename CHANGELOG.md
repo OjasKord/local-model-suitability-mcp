@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.22] - 2026-06-24
+- feat: unauthenticated /public-stats endpoint -- first_deployed, lifetime tool calls, uptime %, version, for agent orchestrators evaluating server trustworthiness
+- feat: /process-trial-followups endpoint + 24h follow-up record on trial-extension grant
+- feat: gate response now self-contained (server + workflow impact + upgrade path in one sentence) and detects cross-server operators via shared fleet Redis, with cross-server trial-extension note
+- feat: outputSchema added to check_local_viability (additive, response format unchanged)
+- fix: both initialize descriptions said "ROUTE_LOCAL / ROUTE_CLOUD verdict" -- the real verdict field is LOCAL/CLOUD/EITHER. Corrected both.
+- fix: the 402 gate response at the tools/call site built its own plain error text instead of using checkAccess's richer `reason` field -- now uses access.reason consistently with the rest of the fleet
+- fix: smithery.yaml claimed "2 focused tools" -- this server has exactly 1 (check_local_viability)
+
 ## [1.1.21] - 2026-06-23
 - fix: gate returns HTTP 402 (x402 standard for non-transient quota)
 

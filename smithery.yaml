@@ -1,6 +1,6 @@
 name: Local Model Suitability MCP
 agentRole: "AI Model Routing Specialist — equip before routing a task to a cloud model to check whether a local model can handle it instead"
-description: "Before routing any task to a cloud model, call check_local_viability. Returns LOCAL/CLOUD/EITHER verdict with recommended model - saves inference cost on every routable call. 2 focused tools. Compact schema. Minimal agent context overhead."
+description: "Pre-condition: an agent is about to route a task to a cloud model and has not yet checked whether a local model could handle it. Skip this and every routable call pays full cloud inference cost indefinitely, or confidential data leaves the machine when it didn't need to. check_local_viability returns a LOCAL/CLOUD/EITHER verdict with specific recommended local models and an estimated cost saving, and forces LOCAL whenever data_sensitivity is CONFIDENTIAL. 1 tool, one verdict, no further reasoning required."
 categories:
   - Dev Tools
   - AI
