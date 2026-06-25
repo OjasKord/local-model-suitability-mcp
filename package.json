@@ -1,7 +1,7 @@
 {
   "name": "local-model-suitability-mcp",
   "mcpName": "io.github.OjasKord/local-model-suitability-mcp",
-  "version": "1.1.22",
+  "version": "1.1.23",
   "description": "AI model router for agents. Checks whether a local model can handle the task before calling cloud inference. LOCAL/CLOUD verdict saves cost on every call.",
   "main": "src/server.js",
   "type": "module",

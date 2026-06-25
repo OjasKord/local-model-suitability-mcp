@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.23] - 2026-06-25
+- feat: calls_remaining field added to check_local_viability response -- "unlimited" for paid keys, numeric free-tier headroom otherwise (HTTP POST and stdio transports)
+- feat: verdict_ttl field added (86400s/24h)
+- feat: data_source_status field added (full/degraded) -- "degraded" when Anthropic responds but returns unparseable output and a fallback verdict is used; "full" otherwise, including the CONFIDENTIAL local-rule shortcut which never calls Anthropic
+
 ## [1.1.22] - 2026-06-24
 - feat: unauthenticated /public-stats endpoint -- first_deployed, lifetime tool calls, uptime %, version, for agent orchestrators evaluating server trustworthiness
 - feat: /process-trial-followups endpoint + 24h follow-up record on trial-extension grant

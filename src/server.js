@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.22';
+const VERSION = '1.1.23';
 const FIRST_DEPLOYED = '2026-04-13T06:41:38Z';
 const LIFETIME_CALLS_REDIS_KEY = 'lms:lifetime_calls';
 const UPTIME_HEARTBEAT_KEY = 'lms:uptime:heartbeat_count';
@@ -16,6 +16,8 @@ const ENTERPRISE_UPGRADE_URL = 'https://buy.stripe.com/28E9AS27PbPvfkoe7Sebu0q';
 const ALLOWED_PAYMENT_LINK_IDS = ['plink_1TQzCBD6WvRe6sn3H1q5t2LF', 'plink_1TQzDSD6WvRe6sn3UM2G1EgX'];
 const PERSIST_FILE = '/tmp/lms_stats.json';
 const LEGAL_DISCLAIMER = 'AI-powered routing analysis. We do not log or store your task content. Results are for cost-optimisation guidance only. Provider maximum liability is limited to subscription fees paid in the preceding 3 months. Full terms: kordagencies.com/terms.html';
+// Caching/staleness policy per tool, in seconds.
+const VERDICT_TTL = { check_local_viability: 86400 };
 
 function nowISO() { return new Date().toISOString(); }
 
@@ -382,6 +384,8 @@ async function checkLocalViability(task, qualityThreshold, dataSensitivity) {
       cloud_justified_reason: null,
       data_sensitivity_override: true,
       analysis_type: 'AI-powered cost routing — NOT a simple lookup',
+      verdict_ttl: VERDICT_TTL.check_local_viability,
+      data_source_status: 'full',
       _disclaimer: LEGAL_DISCLAIMER
     };
   }
@@ -429,6 +433,7 @@ Respond ONLY with a JSON object — no markdown, no explanation outside the JSON
 
   const raw = response.content[0].text.trim();
   let parsed;
+  let aiDegraded = false;
   try {
     parsed = JSON.parse(raw);
   } catch(e) {
@@ -441,6 +446,7 @@ Respond ONLY with a JSON object — no markdown, no explanation outside the JSON
       recommended_local_models: ['llama3.2:8b', 'mistral-7b'],
       cloud_justified_reason: null
     };
+    aiDegraded = true;
   }
 
   const _rLms = {
@@ -448,6 +454,8 @@ Respond ONLY with a JSON object — no markdown, no explanation outside the JSON
     task_quality_threshold: quality,
     data_sensitivity: sensitivity,
     analysis_type: 'AI-powered cost routing — NOT a simple lookup',
+    verdict_ttl: VERDICT_TTL.check_local_viability,
+    data_source_status: aiDegraded ? 'degraded' : 'full',
     checked_at: nowISO(),
     _disclaimer: LEGAL_DISCLAIMER
   };
@@ -890,9 +898,11 @@ const server = createServer(async (req, res) => {
               redisIncr(LIFETIME_CALLS_REDIS_KEY).catch(() => {});
               logCall('check_local_viability', access.tier, clientIp);
               appendSessionLog(clientIp, 'check_local_viability').catch((e) => console.error('[SessionLog] appendSessionLog failed:', e));
+              const callsRemaining = access.tier === 'free' ? Math.max(0, FREE_TIER_LIMIT - getFreeTierCount(clientIp)) : 'unlimited';
 
               try {
                 const result = await checkLocalViability(task, quality_threshold, data_sensitivity);
+                result.calls_remaining = callsRemaining;
 
                 // Partial response for free tier
                 if (access.tier === 'free') {
@@ -902,6 +912,7 @@ const server = createServer(async (req, res) => {
                     reason: result.reason,
                     analysis_type: result.analysis_type,
                     checked_at: result.checked_at,
+                    calls_remaining: result.calls_remaining,
                     _disclaimer: result._disclaimer,
                     upgrade_url: PRO_UPGRADE_URL
                   };
@@ -977,6 +988,7 @@ function setupStdio() {
         } else {
           try {
             const result = await checkLocalViability(task, quality_threshold, data_sensitivity);
+            result.calls_remaining = 'unlimited';
             response = { jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } };
           } catch(e) {
             response = { jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: JSON.stringify({ error: e.message, likely_cause: 'AI routing analysis failed — transient Anthropic API issue', retryable: true, retry_after_ms: 120000, fallback_tool: null, agent_action: 'RETRY_IN_2_MIN', category: 'ai_failure', trace_id: nowISO(), _disclaimer: LEGAL_DISCLAIMER }) }] } };
