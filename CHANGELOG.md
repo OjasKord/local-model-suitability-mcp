@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.1.24] - 2026-06-26
+- fix: trial extension requests now written to Redis (lms:trial:{email}) on grant -- permanent audit trail that survives redeploys; previously in-memory only
+
 ## [1.1.23] - 2026-06-25
 - feat: calls_remaining field added to check_local_viability response -- "unlimited" for paid keys, numeric free-tier headroom otherwise (HTTP POST and stdio transports)
 - feat: verdict_ttl field added (86400s/24h)

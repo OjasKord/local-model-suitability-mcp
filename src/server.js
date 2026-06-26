@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.23';
+const VERSION = '1.1.24';
 const FIRST_DEPLOYED = '2026-04-13T06:41:38Z';
 const LIFETIME_CALLS_REDIS_KEY = 'lms:lifetime_calls';
 const UPTIME_HEARTBEAT_KEY = 'lms:uptime:heartbeat_count';
@@ -715,6 +715,7 @@ const server = createServer(async (req, res) => {
         stats.free_tier_calls_by_ip[clientIp][month] = Math.max(0, current - TRIAL_EXTENSION_CALLS);
         trialExtensions.set(emailKey, { name, email, use_case: use_case || '', ip: clientIp, granted_at: nowISO() });
         saveStats();
+        await redisSet(REDIS_PREFIX + ':trial:' + email.toLowerCase().trim(), { name, email, use_case: use_case || '', ip: clientIp, timestamp: nowISO(), server: 'local-model-suitability-mcp' });
         // 24h follow-up record -- processed by /process-trial-followups (fleet cron)
         await redisSet(REDIS_PREFIX + ':followup:' + email.toLowerCase().trim(), { email, name, server: 'local-model-suitability-mcp', granted_at: nowISO(), sent: false });
         const sendTrialEmail = async (to, subject, html) => {
