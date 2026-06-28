@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.24';
+const VERSION = '1.1.25';
 const FIRST_DEPLOYED = '2026-04-13T06:41:38Z';
 const LIFETIME_CALLS_REDIS_KEY = 'lms:lifetime_calls';
 const UPTIME_HEARTBEAT_KEY = 'lms:uptime:heartbeat_count';
@@ -24,7 +24,7 @@ function nowISO() { return new Date().toISOString(); }
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
-  'Access-Control-Allow-Headers': 'Content-Type, x-api-key, x-stats-key'
+  'Access-Control-Allow-Headers': 'Content-Type, x-api-key, x-stats-key, x-owner-key'
 };
 
 // ── Stats persistence ─────────────────────────────────────────────────────────
@@ -312,6 +312,7 @@ async function saveFreeTierToRedis() {
 
 // ── Anthropic client ──────────────────────────────────────────────────────────
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const OWNER_KEY = process.env.OWNER_KEY || '';
 
 // ── Cloud pricing reference (approximate, per 1K tokens, mid-2026) ───────────
 const CLOUD_PRICING = {
@@ -885,7 +886,12 @@ const server = createServer(async (req, res) => {
               result: { content: [{ type: 'text', text: JSON.stringify({ error: 'task is required — describe what you are about to send to the cloud model', likely_cause: 'required field missing or malformed', retryable: false, retry_after_ms: null, fallback_tool: null, agent_action: 'PROVIDE_REQUIRED_FIELD', category: 'invalid_input', trace_id: nowISO(), _disclaimer: LEGAL_DISCLAIMER }) }] }
             };
           } else {
-            const access = await checkAccess(clientIp, apiKey);
+            const isOwner = OWNER_KEY !== '' && (req.headers['x-owner-key'] || request.owner_key || '') === OWNER_KEY;
+            if (isOwner) {
+              redisIncr('lms:owner_calls:' + new Date().toISOString().slice(0, 7)).catch(() => {});
+              console.log('[owner] owner key used');
+            }
+            const access = isOwner ? { allowed: true, tier: 'owner', plan: 'owner', remaining: Infinity } : await checkAccess(clientIp, apiKey);
 
             if (!access.allowed) {
               statusCode = 402;
