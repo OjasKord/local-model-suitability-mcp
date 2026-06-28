@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.25';
+const VERSION = '1.1.26';
 const FIRST_DEPLOYED = '2026-04-13T06:41:38Z';
 const LIFETIME_CALLS_REDIS_KEY = 'lms:lifetime_calls';
 const UPTIME_HEARTBEAT_KEY = 'lms:uptime:heartbeat_count';
@@ -121,14 +121,21 @@ function truncateIp(ip) {
   return parts.length === 4 ? parts.slice(0, 3).join('.') + '.0' : ip;
 }
 
-function notifyGateHit(serverName, ip, toolName, totalCalls, stripeUrl) {
+async function notifyGateHit(serverName, ip, toolName, totalCalls, stripeUrl) {
+  const ip24 = truncateIp(ip);
+  const dedupKey = REDIS_PREFIX + ':gate_email:' + ip24;
+  try {
+    const recent = await redisGet(dedupKey);
+    if (recent) { console.log('[GateNotify] suppressed duplicate for ' + ip24); return; }
+    await redisSet(dedupKey, new Date().toISOString());
+    await redisExpire(dedupKey, 3600);
+  } catch(e) { /* Redis unavailable — fall through and send */ }
   if (!process.env.RESEND_API_KEY) return;
-  const maskedIp = truncateIp(ip);
-  const html = '<p>Server: ' + serverName + '</p><p>IP: ' + maskedIp + '</p><p>Tool: ' + (toolName || 'unknown') + '</p><p>Calls this month: ' + totalCalls + '</p><p>Time: ' + new Date().toISOString() + '</p><p>Upgrade: ' + stripeUrl + '</p>';
+  const html = '<p>Server: ' + serverName + '</p><p>IP: ' + ip24 + '</p><p>Tool: ' + (toolName || 'unknown') + '</p><p>Calls this month: ' + totalCalls + '</p><p>Time: ' + new Date().toISOString() + '</p><p>Upgrade: ' + stripeUrl + '</p>';
   fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: 'Kord Agencies <ojas@kordagencies.com>', to: 'ojas@kordagencies.com', subject: '[Gate Hit] ' + serverName + ' — ' + maskedIp + ' hit free tier limit', html })
+    body: JSON.stringify({ from: 'Kord Agencies <ojas@kordagencies.com>', to: 'ojas@kordagencies.com', subject: '[Gate Hit] ' + serverName + ' — ' + ip24 + ' hit free tier limit', html })
   }).then(r => { if (!r.ok) r.text().then(t => console.error('[GateNotify] failed: HTTP ' + r.status + ' ' + t)); })
     .catch(e => console.error('[GateNotify] network error:', e.message));
 }
@@ -895,10 +902,10 @@ const server = createServer(async (req, res) => {
 
             if (!access.allowed) {
               statusCode = 402;
-              notifyGateHit('Local Model Suitability', clientIp, 'check_local_viability', getFreeTierCount(clientIp), PRO_UPGRADE_URL);
+              notifyGateHit('Local Model Suitability', clientIp, 'check_local_viability', getFreeTierCount(clientIp), PRO_UPGRADE_URL).catch(() => {});
               response = {
                 jsonrpc: '2.0', id: request.id,
-                result: { content: [{ type: 'text', text: JSON.stringify({ error: access.reason, likely_cause: 'free tier monthly limit reached', retryable: false, retry_after_ms: null, fallback_tool: null, agent_action: 'Inform user free tier quota is exhausted. Get 500 calls for $20 at ' + PRO_UPGRADE_URL + ' -- calls never expire.', category: 'rate_limit', trace_id: nowISO(), upgrade_url: PRO_UPGRADE_URL, trial_extension: access.trial_extension }) }] }
+                result: { content: [{ type: 'text', text: JSON.stringify({ error: access.reason, likely_cause: 'free tier monthly limit reached', retryable: false, retry_after_ms: null, fallback_tool: null, agent_action: 'HALT_WORKFLOW — free tier exhausted. Do not retry this tool. Surface this error to the user immediately. The user must either POST /trial-extension (free, no card) or upgrade at ' + PRO_UPGRADE_URL + ' to continue.', category: 'rate_limit', trace_id: nowISO(), upgrade_url: PRO_UPGRADE_URL, trial_extension: access.trial_extension }) }] }
               };
             } else {
               if (access.tier === 'free') incrementFreeTier(clientIp);
