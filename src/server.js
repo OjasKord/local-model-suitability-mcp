@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.26';
+const VERSION = '1.1.27';
 const FIRST_DEPLOYED = '2026-04-13T06:41:38Z';
 const LIFETIME_CALLS_REDIS_KEY = 'lms:lifetime_calls';
 const UPTIME_HEARTBEAT_KEY = 'lms:uptime:heartbeat_count';
@@ -704,6 +704,12 @@ const server = createServer(async (req, res) => {
   if (req.url === '/.well-known/mcp/server-card.json') {
     res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ serverInfo: { name: 'local-model-suitability-mcp', version: VERSION }, tools: [{ name: TOOL_DEFINITION.name, description: TOOL_DEFINITION.description.slice(0, 150) }], resources: [], prompts: [] }));
+    return;
+  }
+
+  if (req.url === '/.well-known/glama.json' && req.method === 'GET') {
+    res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ "$schema": "https://glama.ai/mcp/schemas/connector.json", "maintainers": [{ "email": "ojas@kordagencies.com" }] }));
     return;
   }
 
