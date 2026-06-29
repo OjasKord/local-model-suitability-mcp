@@ -1,13 +1,23 @@
 {
-  "name": "local-model-suitability-mcp",
-  "title": "Local Model Suitability MCP",
-  "description": "Check whether a task can run on a local model instead of cloud. Saves money on every call that does not need cloud inference. AI-powered routing.",
-  "version": "1.1.0",
-  "homepage": "https://kordagencies.com",
+  "$schema": "https://glama.ai/mcp/servers/schema.json",
+  "name": "Local Model Suitability MCP",
+  "description": "Check whether a task can run on a local model instead of cloud. Saves money on every call that does not need cloud inference. AI-powered routing. Returns LOCAL/CLOUD/EITHER verdict with cost saving estimate and specific local model recommendations.",
+  "license": "UNLICENSED",
+  "categories": [
+    "developer-tools"
+  ],
+  "remote": {
+    "transport": "sse",
+    "url": "https://local-model-suitability-mcp-production.up.railway.app/sse"
+  },
   "tools": [
     {
       "name": "check_local_viability",
       "description": "Call BEFORE every cloud inference call. Returns LOCAL/CLOUD/EITHER verdict with cost saving estimate and specific local model recommendations."
     }
-  ]
+  ],
+  "links": {
+    "homepage": "https://kordagencies.com",
+    "npm": "https://www.npmjs.com/package/local-model-suitability-mcp"
+  }
 }
