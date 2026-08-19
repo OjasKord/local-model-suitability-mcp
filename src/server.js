@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 
-const VERSION = '1.1.30';
+const VERSION = '1.1.31';
 const FIRST_DEPLOYED = '2026-04-13T06:41:38Z';
 const LIFETIME_CALLS_REDIS_KEY = 'lms:lifetime_calls';
 const UPTIME_HEARTBEAT_KEY = 'lms:uptime:heartbeat_count';
@@ -138,6 +138,24 @@ function emailCircuitBreakerAllow() {
   emailBreakerCount++;
   return true;
 }
+
+// One trial extension per IP, ever (2026-08-19). Redis (trial_ext_granted:{ipSafe},
+// no TTL) is the authoritative per-IP dedup and survives restarts. This breaker is a
+// Redis-independent backstop: even if Redis is unreachable and the dedup check
+// silently passes every request, no more than 5 NEW grants can be issued per hour
+// per server process.
+const TRIAL_GRANT_HOURLY_CAP = 5;
+let trialGrantBreakerCount = 0;
+let trialGrantBreakerWindowStart = Date.now();
+function trialGrantCircuitBreakerAllow() {
+  const now = Date.now();
+  if (now - trialGrantBreakerWindowStart > 3600000) { trialGrantBreakerWindowStart = now; trialGrantBreakerCount = 0; }
+  if (trialGrantBreakerCount >= TRIAL_GRANT_HOURLY_CAP) return false;
+  trialGrantBreakerCount++;
+  return true;
+}
+
+function ipSafeKey(ip) { return String(ip).replace(/:/g, '_').replace(/\s/g, ''); }
 
 // Fire-and-forget — redisSet already catches its own errors internally, so
 // this never blocks or throws on the calling request path.
@@ -742,6 +760,25 @@ const server = createServer(async (req, res) => {
         const { name, email, use_case } = JSON.parse(body);
         if (!name || !email) { res.writeHead(400, { ...cors, 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'name and email are required', agent_action: 'PROVIDE_REQUIRED_FIELDS' })); return; }
         const emailKey = 'trial:' + email.toLowerCase().trim();
+        const ipGrantKey = REDIS_PREFIX + ':trial_ext_granted:' + ipSafeKey(clientIp);
+
+        // One trial extension per IP, ever. IP is the authoritative key -- never
+        // name/email, both are attacker-controlled and trivially rotated. Redis
+        // has no TTL on this key, so a grant issued once is permanent regardless
+        // of process restarts.
+        const alreadyGrantedForIp = await redisGet(ipGrantKey);
+        if (alreadyGrantedForIp) {
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ granted: false, error: 'This IP address has already received its one-time trial extension.', message: 'Only one trial extension is available per IP address, and it has already been used. Upgrade to continue: ' + PRO_UPGRADE_URL, upgrade_url: PRO_UPGRADE_URL, agent_action: 'HALT_WORKFLOW — trial extension already used for this IP. Do not retry /trial-extension from this IP under a different name or email. Direct the user to the paid upgrade path.' }));
+          return;
+        }
+        // Redis-independent backstop -- caps new grants at 5/hr/server even if
+        // Redis is unreachable and the check above can't be trusted.
+        if (!trialGrantCircuitBreakerAllow()) {
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ granted: false, error: 'Trial extension grants are temporarily rate-limited on this server.', message: 'Please try again in a few minutes, or upgrade now: ' + PRO_UPGRADE_URL, upgrade_url: PRO_UPGRADE_URL, agent_action: 'RETRY_LATER_OR_UPGRADE' }));
+          return;
+        }
         if (trialExtensions.has(emailKey)) { res.writeHead(409, { ...cors, 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Trial extension already granted for this email.', upgrade_url: PRO_UPGRADE_URL, agent_action: 'INFORM_USER_TRIAL_ALREADY_USED' })); return; }
         const month = MONTH_KEY();
         if (!stats.free_tier_calls_by_ip[clientIp]) stats.free_tier_calls_by_ip[clientIp] = {};
@@ -750,6 +787,7 @@ const server = createServer(async (req, res) => {
         trialExtensions.set(emailKey, { name, email, use_case: use_case || '', ip: clientIp, granted_at: nowISO() });
         saveStats();
         await redisSet(REDIS_PREFIX + ':trial:' + email.toLowerCase().trim(), { name, email, use_case: use_case || '', ip: clientIp, timestamp: nowISO(), server: 'local-model-suitability-mcp' });
+        await redisSet(ipGrantKey, { name, email, ip: clientIp, granted_at: nowISO() }); // no TTL -- one per IP, ever
         // 24h follow-up record -- processed by /process-trial-followups (fleet cron)
         await redisSet(REDIS_PREFIX + ':followup:' + email.toLowerCase().trim(), { email, name, server: 'local-model-suitability-mcp', granted_at: nowISO(), sent: false });
         const sendTrialEmail = async (to, subject, html) => {
