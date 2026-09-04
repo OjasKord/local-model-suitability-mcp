@@ -1,4 +1,4 @@
-[![smithery badge](https://smithery.ai/badge/OjasKord/local-model-suitability-mcp)](https://smithery.ai/servers/OjasKord/local-model-suitability-mcp)
+[![LightNow capabilities](https://lightnow.ai/badge/io.github.OjasKord/local-model-suitability-mcp)](https://lightnow.ai/servers/io.github.OjasKord/local-model-suitability-mcp)
 
 # Local Model Suitability MCP
 
