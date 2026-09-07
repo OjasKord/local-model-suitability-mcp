@@ -9,7 +9,7 @@ import Anthropic from '@anthropic-ai/sdk';
 // Polyfilling here is a no-op wherever the global already exists.
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
-const VERSION = '1.1.32';
+const VERSION = '1.1.33';
 const FIRST_DEPLOYED = '2026-04-13T06:41:38Z';
 const LIFETIME_CALLS_REDIS_KEY = 'lms:lifetime_calls';
 const UPTIME_HEARTBEAT_KEY = 'lms:uptime:heartbeat_count';
@@ -804,7 +804,7 @@ const server = createServer(async (req, res) => {
 
   // Stats
   if (req.url === '/stats' && req.method === 'GET') {
-    if (req.headers['x-stats-key'] !== process.env.STATS_KEY) {
+    if (!process.env.STATS_KEY || req.headers['x-stats-key'] !== process.env.STATS_KEY) {
       res.writeHead(401, cors);
       res.end(JSON.stringify({ error: 'Unauthorised' }));
       return;
@@ -863,7 +863,7 @@ const server = createServer(async (req, res) => {
 
   // Session log
   if (req.url === '/session-log' && req.method === 'GET') {
-    if (req.headers['x-stats-key'] !== process.env.STATS_KEY) { res.writeHead(401, cors); res.end(JSON.stringify({ error: 'Unauthorized' })); return; }
+    if (!process.env.STATS_KEY || req.headers['x-stats-key'] !== process.env.STATS_KEY) { res.writeHead(401, cors); res.end(JSON.stringify({ error: 'Unauthorized' })); return; }
     (async () => {
       const keys = await redisKeys(`${REDIS_PREFIX}:session:*`);
       const sessions = [];
@@ -958,7 +958,7 @@ const server = createServer(async (req, res) => {
   // address, 24h after a trial extension was granted, unless that email has
   // since picked up a paid key on this server.
   if (req.url === '/process-trial-followups' && req.method === 'POST') {
-    if (req.headers['x-stats-key'] !== process.env.STATS_KEY) { res.writeHead(401, cors); res.end(JSON.stringify({ error: 'Unauthorized' })); return; }
+    if (!process.env.STATS_KEY || req.headers['x-stats-key'] !== process.env.STATS_KEY) { res.writeHead(401, cors); res.end(JSON.stringify({ error: 'Unauthorized' })); return; }
     (async () => {
       const keys = await redisKeys(REDIS_PREFIX + ':followup:*');
       const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
@@ -1011,7 +1011,7 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.url === '/daily-report' && req.method === 'POST') {
-    if (req.headers['x-stats-key'] !== process.env.STATS_KEY) {
+    if (!process.env.STATS_KEY || req.headers['x-stats-key'] !== process.env.STATS_KEY) {
       res.writeHead(401, cors); res.end(JSON.stringify({ error: 'Unauthorized' })); return;
     }
     (async () => {
